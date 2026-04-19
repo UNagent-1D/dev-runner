@@ -1,0 +1,22 @@
+[submodule "chat-orch"]
+	path = chat-orch
+	url = git@github.com:UNagent-1D/chat-orch.git
+	branch = feat/orch-thin-forwarder
+[submodule "conversation-chat"]
+	path = conversation-chat
+	url = git@github.com:UNagent-1D/conversation-chat.git
+[submodule "FrontEnd"]
+	path = FrontEnd
+	url = git@github.com:UNagent-1D/FrontEnd.git
+	branch = feat/analytics-metricas
+[submodule "Hospital-MP"]
+	path = Hospital-MP
+	url = git@github.com:UNagent-1D/Hospital-MP.git
+[submodule "Metricas"]
+	path = Metricas
+	url = git@github.com:UNagent-1D/Metricas.git
+	branch = feat/compose-integration
+[submodule "Tenant"]
+	path = Tenant
+	url = git@github.com:UNagent-1D/Tenant.git
+	branch = feat/dockerfile

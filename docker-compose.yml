@@ -1,0 +1,140 @@
+services:
+  # ---------------------------------------------------------------------------
+  # Infrastructure
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: archsoft-redis
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - archsoft
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: archsoft-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    networks:
+      - archsoft
+
+  # ---------------------------------------------------------------------------
+  # Application services
+  # ---------------------------------------------------------------------------
+  tenant:
+    build:
+      context: ./Tenant
+    container_name: archsoft-tenant
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      GIN_MODE: release
+    ports:
+      - "8080:8080"
+    networks:
+      - archsoft
+
+  hospital-mock:
+    build:
+      context: ./Hospital-MP
+    container_name: archsoft-hospital-mock
+    ports:
+      - "8092:8080"
+    networks:
+      - archsoft
+
+  conversation-chat:
+    build:
+      context: ./conversation-chat
+    container_name: archsoft-conversation-chat
+    environment:
+      SERVER_PORT: "8082"
+      APP_VERSION: "1.0.0"
+      GIN_MODE: release
+      REDIS_URL: "redis://redis:6379/1"
+      MONGO_URI: ${MONGO_URI}
+      MONGO_DB: ${MONGO_DB}
+      ACR_SERVICE_URL: "http://acr-service:8081"
+      TENANT_SERVICE_URL: "http://tenant:8080"
+      AUTH_SERVICE_URL: "http://tenant:8080"
+      OPENAI_API_KEY: ${OPENROUTER_API_KEY}
+      AUTH_STUB: "true"
+      AUTH_STUB_USER_ID: "00000000-0000-0000-0000-000000000001"
+      AUTH_STUB_ROLE: "app_admin"
+      AUTH_STUB_EMAIL: "internal@platform.local"
+      DEFAULT_IDLE_TIMEOUT_SECONDS: "300"
+    ports:
+      - "8082:8082"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - archsoft
+
+  chat-orch:
+    build:
+      context: ./chat-orch
+    container_name: archsoft-chat-orch
+    environment:
+      SERVER_HOST: "0.0.0.0"
+      SERVER_PORT: "3000"
+      CONVERSATION_CHAT_URL: "http://conversation-chat:8082"
+      TENANT_SERVICE_URL: "http://tenant:8080"
+      METRICAS_URL: "http://metricas:8080"
+      HOSPITAL_MOCK_URL: "http://hospital-mock:8080"
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_DEFAULT_TENANT_ID: ${TELEGRAM_DEFAULT_TENANT_ID:-demo-tenant}
+      CORS_ALLOW_ORIGIN: "http://localhost:3000"
+      OPENAI_API_KEY: ${OPENROUTER_API_KEY}
+      OPENAI_BASE_URL: "https://openrouter.ai/api/v1"
+      OPENAI_DEFAULT_MODEL: "nvidia/nemotron-3-super-120b-a12b:free"
+      RUST_LOG: "chat_orch=info,tower_http=info"
+      LOG_FORMAT: "json"
+    ports:
+      - "8000:3000"
+    depends_on:
+      - conversation-chat
+      - hospital-mock
+    networks:
+      - archsoft
+
+  frontend:
+    build:
+      context: ./FrontEnd
+    container_name: archsoft-frontend
+    environment:
+      VITE_API_BASE_URL: "http://localhost:8080"
+    ports:
+      - "3000:80"
+    depends_on:
+      - tenant
+      - conversation-chat
+    networks:
+      - archsoft
+
+  # ---------------------------------------------------------------------------
+  # Metrics API (Go) — exposes /stats/kpis consumed by the frontend dashboard.
+  # ---------------------------------------------------------------------------
+  metricas:
+    build:
+      context: ./Metricas
+    container_name: archsoft-metricas
+    ports:
+      - "8091:8080"
+    networks:
+      - archsoft
+
+networks:
+  archsoft:
+    driver: bridge
+
+volumes:
+  qdrant-data:

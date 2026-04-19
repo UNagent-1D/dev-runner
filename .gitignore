@@ -1,0 +1,12 @@
+# Local secrets — never commit
+.env
+.env.local
+*.env.local
+
+# Editor noise
+.vscode/
+.idea/
+*.swp
+
+# OS noise
+.DS_Store
