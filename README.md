@@ -9,17 +9,16 @@ working stack.
 
 | Path | Upstream | Default branch pinned | Role |
 |---|---|---|---|
-| `chat-orch/` | [UNagent-1D/chat-orch](https://github.com/UNagent-1D/chat-orch) | `feat/orch-thin-forwarder` | Rust/Axum orchestrator — runs the LLM turn loop + Telegram long-poll + SSE to the frontend |
-| `Tenant/` | [UNagent-1D/Tenant](https://github.com/UNagent-1D/Tenant) | `feat/dockerfile` | Go/Gin auth + tenant admin API |
+| `chat-orch/` | [UNagent-1D/chat-orch](https://github.com/UNagent-1D/chat-orch) | `main` | Rust/Axum orchestrator — runs the LLM turn loop + Telegram long-poll + SSE to the frontend |
+| `Tenant/` | [UNagent-1D/Tenant](https://github.com/UNagent-1D/Tenant) | `main` | Go/Gin auth + tenant admin API |
 | `conversation-chat/` | [UNagent-1D/conversation-chat](https://github.com/UNagent-1D/conversation-chat) | `main` | Go/Gin session service (used by operator flows; not on the hot path for the demo) |
 | `Hospital-MP/` | [UNagent-1D/Hospital-MP](https://github.com/UNagent-1D/Hospital-MP) | `main` | Python/Flask mock hospital scheduling API |
-| `Metricas/` | [UNagent-1D/Metricas](https://github.com/UNagent-1D/Metricas) | `feat/compose-integration` | Go/Gin KPI service (backs the Analytics dashboard) |
-| `FrontEnd/` | [UNagent-1D/FrontEnd](https://github.com/UNagent-1D/FrontEnd) | `feat/analytics-metricas` | React 19 + Vite admin dashboard |
+| `Metricas/` | [UNagent-1D/Metricas](https://github.com/UNagent-1D/Metricas) | `main` | Go/Gin KPI service (backs the Analytics dashboard) |
+| `FrontEnd/` | [UNagent-1D/FrontEnd](https://github.com/UNagent-1D/FrontEnd) | `main` | React 19 + Vite admin dashboard |
 
-The feature branches above carry the full working code for the demo.
-Once the PRs against each repo's `main` are merged, bump the submodules
-(`git submodule update --remote`) and switch the `branch` entries in
-`.gitmodules` back to `main`.
+All submodules track their upstream `main`. Bump to the newest code
+with `git submodule update --remote --merge`, then commit the pointer
+changes.
 
 ## Hosted dependencies
 
@@ -103,28 +102,6 @@ git add .
 git commit -m "chore: bump submodules"
 git push
 ```
-
-## When the PRs land on main
-
-Once each sub-repo's feature PR merges, switch `.gitmodules`:
-
-```
-sed -i 's|branch = feat/orch-thin-forwarder|branch = main|' .gitmodules
-sed -i 's|branch = feat/analytics-metricas|branch = main|' .gitmodules
-sed -i 's|branch = feat/compose-integration|branch = main|' .gitmodules
-sed -i 's|branch = feat/dockerfile|branch = main|' .gitmodules
-git submodule sync
-git submodule update --remote --merge
-git add .gitmodules <paths>
-git commit -m "chore: track main on all submodules"
-git push
-```
-
-Current open PRs:
-- chat-orch: https://github.com/UNagent-1D/chat-orch/pull/6
-- Tenant: https://github.com/UNagent-1D/Tenant/pull/2
-- FrontEnd: https://github.com/UNagent-1D/FrontEnd/pull/1
-- Metricas: https://github.com/UNagent-1D/Metricas/pull/1
 
 ## Notes
 
