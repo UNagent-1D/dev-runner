@@ -1,4 +1,8 @@
 [submodule "chat-orch"]
+	path = agent-runtime
+	url = git@github.com:UNagent-1D/agent-runtime.git
+	branch = main
+[submodule "chat-orch"]
 	path = chat-orch
 	url = git@github.com:UNagent-1D/chat-orch.git
 	branch = main
@@ -20,3 +24,6 @@
 	path = Tenant
 	url = git@github.com:UNagent-1D/Tenant.git
 	branch = main
+[submodule "agent-runtime"]
+	path = agent-runtime
+	url = git@github.com:UNagent-1D/agent-runtime.git
