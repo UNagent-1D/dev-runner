@@ -15,6 +15,21 @@ services:
     networks:
       - archsoft
 
+  mongo:
+    image: mongo:7
+    container_name: archsoft-mongo
+    expose:
+      - "27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - archsoft
+
   qdrant:
     image: qdrant/qdrant:latest
     container_name: archsoft-qdrant
@@ -60,12 +75,13 @@ services:
       APP_VERSION: "1.0.0"
       GIN_MODE: release
       REDIS_URL: "redis://redis:6379/1"
-      MONGO_URI: ${MONGO_URI}
-      MONGO_DB: ${MONGO_DB}
-      ACR_SERVICE_URL: "http://acr-service:8081"
-      TENANT_SERVICE_URL: "http://tenant:8080"
+      MONGO_URI: "mongodb://mongo:27017"
+      MONGO_DB: "conversatory"
+      ACR_SERVICE_URL: "http://agent-runtime:3100"
+      TENANT_SERVICE_URL: "http://agent-runtime:3100"
       AUTH_SERVICE_URL: "http://tenant:8080"
       OPENAI_API_KEY: ${OPENROUTER_API_KEY}
+      OPENAI_BASE_URL: "https://openrouter.ai/api/v1"
       AUTH_STUB: "true"
       AUTH_STUB_USER_ID: "00000000-0000-0000-0000-000000000001"
       AUTH_STUB_ROLE: "app_admin"
@@ -76,6 +92,26 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      mongo:
+        condition: service_healthy
+      agent-runtime:
+        condition: service_started
+    networks:
+      - archsoft
+
+  agent-runtime:
+    build:
+      context: ./agent-runtime
+    container_name: archsoft-agent-runtime
+    environment:
+      PORT: "3100"
+      CONVERSATION_CHAT_URL: "http://conversation-chat:8082"
+      HOSPITAL_MOCK_URL: "http://hospital-mock:8080"
+      OPENAI_DEFAULT_MODEL: "nvidia/nemotron-3-super-120b-a12b:free"
+    ports:
+      - "3100:3100"
+    depends_on:
+      - hospital-mock
     networks:
       - archsoft
 
@@ -96,11 +132,13 @@ services:
       OPENAI_API_KEY: ${OPENROUTER_API_KEY}
       OPENAI_BASE_URL: "https://openrouter.ai/api/v1"
       OPENAI_DEFAULT_MODEL: "nvidia/nemotron-3-super-120b-a12b:free"
+      AGENT_RUNTIME_URL: "http://agent-runtime:3100"
       RUST_LOG: "chat_orch=info,tower_http=info"
       LOG_FORMAT: "json"
     ports:
       - "8000:3000"
     depends_on:
+      - agent-runtime
       - conversation-chat
       - hospital-mock
     networks:
@@ -138,3 +176,4 @@ networks:
 
 volumes:
   qdrant-data:
+  mongo-data:

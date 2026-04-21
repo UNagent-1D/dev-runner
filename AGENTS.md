@@ -9,7 +9,7 @@ welcome too. If you're just trying to run the thing, start with
 
 ## 1. What this repo is
 
-`dev-runner` is the umbrella. Six independent service repos sit under
+`dev-runner` is the umbrella. Seven independent service repos sit under
 it as git submodules; this root owns only the glue — `docker-compose.yml`,
 `.env.example`, and this doc. One clone + one compose command runs the
 full multi-tenant conversational-AI admin platform locally against
@@ -38,19 +38,23 @@ Commits here should only change: submodule pointers, the compose file,
            │    GET  /v1/chat/stream      ├─▶  Metricas (counters)
            │    POST /v1/feedback         │   :8091
            │                              │
-           │                              └─▶  OpenRouter (LLM, OpenAI-compat)
+           │                              ├─▶  OpenRouter (LLM, OpenAI-compat)
+           │                              │
+           │                              └─▶  agent-runtime  (:3100)
+           │                                        │  ACR stub + tenant stub
+           │                                        │  + session proxy
+           │                                        ▼
+           │                                  conversation-chat (:8082)
+           │                                  sessions + history (Mongo/Redis)
            │
            └─────────────▶  metricas   ──  (polled every 10 s from Analytics)
                             :8091
 
   Telegram ──▶  chat-orch (long-poll getUpdates, same runtime as /v1/chat)
 
-  conversation-chat (:8082) is running but currently off the hot path —
-  see §6.3.
-
-  Redis (:6379 internal) — conversation-chat sessions.
+  Redis (:6379 internal) — conversation-chat session cache.
   Qdrant (:6333) — vector DB slot (satisfies rubric NoSQL requirement).
-  MongoDB Atlas — conversation-chat document store.
+  MongoDB (docker-compose) — conversation-chat document store.
 ```
 
 Language mix (per rubric: ≥3 general-purpose languages): **Rust, Go,
@@ -64,7 +68,8 @@ Python, TypeScript**.
 |---|---|---|---|
 | `chat-orch/` | UNagent-1D/chat-orch | Rust (Axum, Tokio, reqwest) | Front-door orchestrator. Owns the LLM turn loop, hospital tool calling, SSE, Telegram long-poll, metricas tap. |
 | `Tenant/` | UNagent-1D/Tenant | Go (Gin, lib/pq, bcrypt) | Auth + tenant admin API. JWT issuance via `/auth/login`. |
-| `conversation-chat/` | UNagent-1D/conversation-chat | Go (Gin, mongo-driver, go-redis, go-openai) | Session + history service. Currently bypassed (see §6.3). |
+| `conversation-chat/` | UNagent-1D/conversation-chat | Go (Gin, mongo-driver, go-redis, go-openai) | Session + history service. Wired via agent-runtime (see §6.3). |
+| `agent-runtime/` | UNagent-1D/agent-runtime | TypeScript (Express 5, Node.js) | ACR stub + tenant stub + session proxy. Bridges chat-orch → conversation-chat. |
 | `Hospital-MP/` | UNagent-1D/Hospital-MP | Python 3.12 (Flask) | Mock scheduling API. Five endpoints per `hospital_mock_api_requirements.docx.md`. |
 | `Metricas/` | UNagent-1D/Metricas | Go (Gin, prometheus client) | In-memory KPI counters + daily buckets + CORS + /stats endpoints. |
 | `FrontEnd/` | UNagent-1D/FrontEnd | TypeScript (React 19, Vite, Tailwind, shadcn/ui, TanStack Query, recharts, react-hook-form, zod, Zustand) | Admin dashboard. |
@@ -153,10 +158,15 @@ Per-service env (injected by `docker-compose.yml`):
 - chat-orch: `CONVERSATION_CHAT_URL`, `TENANT_SERVICE_URL`,
   `METRICAS_URL`, `HOSPITAL_MOCK_URL`, `OPENAI_BASE_URL`,
   `OPENAI_DEFAULT_MODEL` (default `nvidia/nemotron-3-super-120b-a12b:free`),
+  `AGENT_RUNTIME_URL` (`http://agent-runtime:3100`),
   `CORS_ALLOW_ORIGIN`, `RUST_LOG`, `LOG_FORMAT`.
-- conversation-chat: `AUTH_STUB=true` (bypasses auth-service validation;
-  the `Authorization` header still must be present — any non-empty
-  bearer works).
+- agent-runtime: `PORT` (default `3100`), `CONVERSATION_CHAT_URL`
+  (`http://conversation-chat:8082`), `HOSPITAL_MOCK_URL`
+  (`http://hospital-mock:8080`), `OPENAI_DEFAULT_MODEL`.
+- conversation-chat: `ACR_SERVICE_URL` + `TENANT_SERVICE_URL` both
+  point to `http://agent-runtime:3100`. `AUTH_STUB=true` (bypasses
+  auth-service validation; the `Authorization` header still must be
+  present — any non-empty bearer works).
 - Tenant: reads `DATABASE_URL` + `JWT_SECRET`.
 
 Never commit `.env`. `.gitignore` already excludes it.
@@ -173,7 +183,7 @@ src/
   lib.rs        module exports + AppState
   config.rs     AppConfig::from_env, all env vars in one place
   error.rs      AppError enum, IntoResponse
-  gateway.rs    HTTP clients: ConversationChatClient (unused),
+  gateway.rs    HTTP clients: ConversationChatClient (proxied via agent-runtime),
                 MetricasClient (record_turn, record_feedback),
                 TelegramClient (get_updates, send_message)
   llm.rs        OpenAI-compatible chat completions with tool calling
@@ -245,17 +255,21 @@ sql/init_schema.sql         tenants, users, user_tenants + check-constraint
 
 ### 6.3 conversation-chat (Go / Gin)
 
-Currently **not on the hot path**. It's running in the compose stack
-(its `/api/v1/health` is green), but chat-orch no longer forwards to
-it. The reason: its `CreateSession` requires live calls to an Agent
-Config Registry (ACR) service and additional Tenant endpoints
-(`/profiles`, `/data-sources`) that don't exist yet.
+Now wired into the stack via **agent-runtime**. chat-orch sends session
+and turn requests to agent-runtime, which adapts the payload shape and
+proxies them to conversation-chat. conversation-chat's `ACR_SERVICE_URL`
+and `TENANT_SERVICE_URL` both resolve to agent-runtime, which stubs
+those dependencies.
 
-When ACR exists, re-enable the path by reverting the runtime delegation
-in `chat-orch/src/routes.rs::chat_forward` to call
-`state.conversation_chat.create_session/post_turn` instead of
-`runtime::run_turn`. The `ConversationChatClient` + AppState wiring is
-intact.
+The `ConversationChatClient` path inside chat-orch is activated by
+`AGENT_RUNTIME_URL` pointing at agent-runtime rather than directly at
+conversation-chat — agent-runtime normalises the request shape
+(`OpenSessionRequest` / `TurnRequest`) before forwarding.
+
+If the path breaks, check: (1) agent-runtime is up (`/health`),
+(2) `AUTH_STUB=true` is set and any Bearer token is present in forwarded
+headers, (3) Mongo and Redis are healthy (conversation-chat depends on
+both).
 
 ### 6.4 Hospital-MP (Python / Flask)
 
@@ -349,6 +363,65 @@ src/
   replacement). Don't expect runtime env injection beyond the tiny
   `entrypoint.sh` shim.
 
+### 6.7 agent-runtime (TypeScript / Express 5)
+
+```
+src/
+  index.ts              bootstrap: Express app, mount all routers, listen
+  registry.ts           in-memory AgentProfile store; currently always
+                        resolves to hospitalProfile regardless of id
+  agents/
+    hospital.ts         hospitalProfile: system prompt (es-CO), 5 tools,
+                        modelConfig, escalation, allowedSpecialties/Locations
+  routes/
+    acr.ts              GET /api/v1/tenants/:tid/profiles/:pid/configs/active
+                        → ACRConfig (consumed by conversation-chat's ACRClient)
+    tenant-stub.ts      GET /api/v1/tenants/:tid
+                        GET /api/v1/tenants/:tid/profiles
+                        GET /api/v1/tenants/:tid/data-sources
+                        (stubs conversation-chat's TenantClient calls)
+    proxy.ts            POST /api/v1/sessions
+                        POST /api/v1/sessions/:sid/turns
+                        (adapts chat-orch thin payloads → conversation-chat
+                        OpenSessionRequest / TurnRequest shapes)
+    health.ts           GET /health
+  types/
+    acr.ts, agent.ts, tenant.ts   shared interfaces
+```
+
+**Common tasks:**
+
+- **Add or change the agent persona / tools:** edit `agents/hospital.ts`.
+  The system prompt, tool definitions, and model config all live there.
+  `registry.ts` will pick up the change on next restart (no other wiring
+  needed while there is only one profile).
+
+- **Add a second agent profile:**
+  1. Create `agents/<name>.ts` following the `AgentProfile` shape.
+  2. Import and add to the `profiles` Map in `registry.ts`.
+  3. Update `getProfile()` to do a real `profiles.get(id)` lookup with a
+     fallback instead of always returning `hospitalProfile`.
+
+- **Add a new data-source tool route:** add an entry to `route_configs`
+  in `tenant-stub.ts::DataSource`. conversation-chat's `executeTool()`
+  will automatically use the new route via `{param}` substitution.
+
+- **Rebuild just agent-runtime:**
+  ```
+  docker compose up -d --build agent-runtime
+  ```
+
+**Gotchas:**
+
+- `registry.ts::getProfile()` ignores the requested `id` and always
+  returns `hospitalProfile`. This is intentional while there is only one
+  profile, but must change before multi-tenant profiles can diverge.
+- The proxy uses the native `fetch` API (Node 18+). The Dockerfile must
+  use Node ≥18; check before downgrading the base image.
+- `OPENAI_DEFAULT_MODEL` in the agent-runtime container overrides the
+  model baked into `hospitalProfile.modelConfig.model`. The compose file
+  sets it; ACR responses reflect the env value, not the code default.
+
 ---
 
 ## 7. Data stores
@@ -409,7 +482,10 @@ src/
 | Dashboard KPI cards empty on login | Metricas missing CORS headers. Rebuild metricas. Also: counters reset on every metricas restart — drive some traffic. |
 | Telegram bot silent | Check `TELEGRAM_BOT_TOKEN` + `TELEGRAM_DEFAULT_TENANT_ID` in `.env`; ensure no webhook is set (`getWebhookInfo.url == ""`); recreate container to pick up env changes. |
 | Port 8090/6379/3000 "already allocated" | Another docker project on your machine. Host port collisions — edit the left-hand port in `docker-compose.yml`. |
-| chat-orch gets 401 from conversation-chat | `AUTH_STUB=true` still requires a Bearer header. chat-orch sends `Bearer internal`; don't strip it. (Moot today — orch no longer forwards there.) |
+| chat-orch gets 401 from conversation-chat | `AUTH_STUB=true` still requires a Bearer header. agent-runtime proxy forwards `Authorization: Bearer internal`; don't strip it. |
+| conversation-chat exits on startup | Likely Mongo or Redis not ready. Check `depends_on` health conditions; run `docker compose logs mongo redis`. |
+| agent-runtime returns 502 on `/api/v1/sessions` | conversation-chat is down or not yet healthy. Run `docker compose logs conversation-chat` and verify Mongo/Redis are up first. |
+| ACR config returns wrong model | `OPENAI_DEFAULT_MODEL` env var in the agent-runtime container overrides the code default. Check `docker compose config agent-runtime`. |
 | frontend docker build `chmod: Operation not permitted` | `USER appuser` must come **after** the `chmod +x entrypoint.sh` step. |
 | chat-orch cargo build: "can't find `throughput` bench" | Orphan `[[bench]]` section in `Cargo.toml`. Remove it or add a stub file. |
 
@@ -441,12 +517,14 @@ in-flight PR branch.
 
 Features people ask about that aren't built yet:
 
-- **ACR (Agent Config Registry).** Would enable conversation-chat's
-  session flow. When it lands, revert the chat-orch routes to
-  delegate session + turn creation to conversation-chat.
-- **Admin CRUD for agent profiles, data sources, tool registry.** Schema
-  sketched in an earlier plan; no endpoints written. Frontend pages
-  still show mock data.
+- **Real ACR persistence.** agent-runtime ships a working in-memory ACR
+  stub (`registry.ts`). It always returns the same `hospitalProfile`
+  regardless of the requested profile id. A real ACR would persist
+  profiles to a DB, support CRUD, and resolve per-tenant configurations.
+- **Admin CRUD for agent profiles, data sources, tool registry.**
+  agent-runtime exposes the read side via stub endpoints. Write-side
+  endpoints and a connected Frontend UI are not implemented; the
+  Profiles and Data Sources pages in the dashboard still show mock data.
 - **Operator flows** (escalation queue, active chat, customer lookup).
   Pages currently render "Coming soon" stubs.
 - **Persisted Metricas state.** Currently in-memory; a restart clears
@@ -465,6 +543,7 @@ Features people ask about that aren't built yet:
 | chat-orch (Rust orchestrator) | Loaiza (@juanloaiza21) |
 | Tenant (Go auth + admin) | Victor, Nicolás (@nizuga), Manuel (@ManuelEDS) |
 | conversation-chat (Go sessions) | Daniel |
+| agent-runtime (TS ACR + proxy) | Daniel |
 | FrontEnd (React dashboard) | Manuel, Julian |
 | Hospital-MP (Python mock) | shared |
 | Metricas (Go KPIs) | shared |
