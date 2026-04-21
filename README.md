@@ -5,6 +5,18 @@ Umbrella repo that boots the whole UNAgent platform locally with a single
 one pins them as git submodules so a fresh clone reproduces the exact
 working stack.
 
+## Documentation
+
+- **[Prototype 1 — Software Architecture submission](docs/PROTOTYPE_1.md)** —
+  team roster (1D), C&C view, architectural styles, connectors,
+  requirement traceability, and quickstart. Exportable to
+  `p1_1D.pdf` for MiCampus delivery.
+- **[AGENTS.md](AGENTS.md)** — full agent/developer playbook for the
+  platform: per-service cheat sheets, common tasks, and gotchas.
+- Brand assets (`Un Agent — Asesores en Salud`) live under
+  [`LogosUNagent/`](LogosUNagent/); the horizontal lockup used in the
+  P1 writeup is at [`docs/logo.png`](docs/logo.png).
+
 ## What's inside
 
 | Path | Upstream | Default branch pinned | Role |
