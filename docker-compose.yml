@@ -26,6 +26,25 @@ services:
     networks:
       - archsoft
 
+  # Local Mongo dedicated to the email audit service. conversation-chat
+  # still talks to hosted Atlas via MONGO_URI; this one is intentionally
+  # in-cluster so the audit trail stays self-contained for the demo.
+  email-mongo:
+    image: mongo:7
+    container_name: archsoft-email-mongo
+    expose:
+      - "27017"
+    volumes:
+      - email-mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - archsoft
+
   # ---------------------------------------------------------------------------
   # Application services
   # ---------------------------------------------------------------------------
@@ -167,9 +186,45 @@ services:
     networks:
       - archsoft
 
+  # ---------------------------------------------------------------------------
+  # Email dispatch + audit trail (Java/Spring Boot, SendGrid + local Mongo).
+  # ---------------------------------------------------------------------------
+  email-send:
+    build:
+      context: ./UN_email_send_ms
+    container_name: archsoft-email-send
+    environment:
+      SERVER_PORT: "8080"
+      MONGO_URI: "mongodb://email-mongo:27017"
+      MONGO_DB_EMAIL: ${MONGO_DB_EMAIL:-email_audit}
+      SENDGRID_API_KEY: ${SENDGRID_API_KEY}
+      SENDGRID_SANDBOX_MODE: ${SENDGRID_SANDBOX_MODE:-true}
+      EMAIL_FROM_DEFAULT: ${EMAIL_FROM_DEFAULT:-noreply@unagent.local}
+      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-UNAgent Notifications}
+      JWT_SECRET: ${JWT_SECRET}
+      AUTH_STUB: ${EMAIL_AUTH_STUB:-true}
+      AUTH_STUB_USER_ID: "00000000-0000-0000-0000-000000000001"
+      AUTH_STUB_ROLE: "app_admin"
+      AUTH_STUB_EMAIL: "internal@platform.local"
+      LOG_FORMAT: "json"
+    ports:
+      - "8089:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+    depends_on:
+      email-mongo:
+        condition: service_healthy
+    networks:
+      - archsoft
+
 networks:
   archsoft:
     driver: bridge
 
 volumes:
   qdrant-data:
+  email-mongo-data:

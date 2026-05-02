@@ -58,7 +58,7 @@ Commits here should only change: submodule pointers, the compose file,
 ```
 
 Language mix (per rubric: ≥3 general-purpose languages): **Rust, Go,
-Python, TypeScript**.
+Python, TypeScript, Java**.
 
 ---
 
@@ -73,6 +73,7 @@ Python, TypeScript**.
 | `Hospital-MP/` | UNagent-1D/Hospital-MP | Python 3.12 (Flask) | Mock scheduling API. Five endpoints per `hospital_mock_api_requirements.docx.md`. |
 | `Metricas/` | UNagent-1D/Metricas | Go (Gin, prometheus client) | In-memory KPI counters + daily buckets + CORS + /stats endpoints. |
 | `FrontEnd/` | UNagent-1D/FrontEnd | TypeScript (React 19, Vite, Tailwind, shadcn/ui, TanStack Query, recharts, react-hook-form, zod, Zustand) | Admin dashboard. |
+| `UN_email_send_ms/` | UNagent-1D/UN_email_send_ms | Java 21 (Spring Boot 3.3.x, Spring Data MongoDB, sendgrid-java, jjwt) | Outbound-email dispatch + audit trail. Sends via SendGrid, persists every attempt to a dedicated local Mongo (`email_events`). |
 
 Every submodule tracks `branch = main` in `.gitmodules`. The umbrella
 pins a specific commit; `git submodule update --remote --merge` bumps
@@ -152,6 +153,12 @@ Optional:
 | `VITE_METRICAS_API_URL` | `http://localhost:8091` | Frontend override |
 | `VITE_TENANT_API_URL` | `http://localhost:8080` | Frontend override |
 | `VITE_CHAT_API_URL` | `http://localhost:8082/api/v1` | Frontend override |
+| `SENDGRID_API_KEY` | unset | UN_email_send_ms — required if you actually want delivery; in sandbox it is unused but the env var still has to exist |
+| `SENDGRID_SANDBOX_MODE` | `true` | UN_email_send_ms — when true, SendGrid accepts the request and returns 202 without delivering |
+| `EMAIL_FROM_DEFAULT` | `noreply@unagent.local` | UN_email_send_ms — sender address used when the request omits `from` |
+| `EMAIL_FROM_NAME` | `UNAgent Notifications` | UN_email_send_ms — display name |
+| `MONGO_DB_EMAIL` | `email_audit` | UN_email_send_ms — DB name on the **local** `email-mongo` container (not Atlas) |
+| `EMAIL_AUTH_STUB` | `true` | UN_email_send_ms — when true, any non-empty bearer is accepted |
 
 Per-service env (injected by `docker-compose.yml`):
 
@@ -422,6 +429,75 @@ src/
   model baked into `hospitalProfile.modelConfig.model`. The compose file
   sets it; ACR responses reflect the env value, not the code default.
 
+### 6.8 UN_email_send_ms (Java / Spring Boot)
+
+```
+src/main/java/co/edu/unagent/emailsend/
+  EmailSendApplication.java   bootstrap (@SpringBootApplication)
+  api/
+    EmailController.java       POST /api/v1/emails, GET single, GET list
+    HealthController.java      /health (Mongo ping with 1s deadline)
+    ErrorEnvelope.java         { error, request_id }
+    dto/                       SendEmailRequest, SendEmailResponse,
+                               EmailAuditDto, PageResponse
+  domain/
+    EmailAudit.java            @Document("email_events")
+    EmailStatus.java           QUEUED / SENT / FAILED
+    EmailRepository.java       MongoRepository + idempotency lookup
+  service/
+    EmailService.java          orchestrator (validate → audit → send → update)
+    EmailProvider.java         interface for tests
+    SendGridEmailProvider.java Web API v3, retry once on 5xx/IOException
+  security/
+    JwtAuthFilter.java         HS256 verify, populates SecurityContext
+    AuthStubFilter.java        active when AUTH_STUB=true
+    SecurityConfig.java        filter chain wiring + permitAll(/health)
+  config/
+    AppProperties.java         @ConfigurationProperties + @NotBlank
+    SendGridConfig.java        SendGrid bean
+    MongoIndexInitializer.java idempotent index creation on startup
+    MongoStartupPing.java      @PostConstruct ping (fail-fast)
+  error/GlobalExceptionHandler.java   ControllerAdvice → ErrorEnvelope
+  observability/RequestIdFilter.java  X-Request-Id + MDC
+```
+
+**Common tasks:**
+
+- **Add a new email category:** no code change. The caller passes
+  `category: "your.tag"` in the request body and it lands on the audit row.
+
+- **Switch sender provider:** implement `EmailProvider` (e.g.
+  `SesEmailProvider`) and replace the `@Component` annotation on
+  `SendGridEmailProvider`. The audit flow in `EmailService` is provider-agnostic.
+
+- **Inspect the audit collection:**
+  ```
+  docker compose exec email-mongo mongosh email_audit \
+    --eval 'db.email_events.find().sort({created_at:-1}).limit(5).pretty()'
+  ```
+
+- **Rebuild just email-send:**
+  ```
+  docker compose up -d --build email-send
+  ```
+
+**Gotchas:**
+
+- The audit collection lives on the **local** `email-mongo` container,
+  not Atlas. The umbrella sets `MONGO_URI: "mongodb://email-mongo:27017"`
+  for this service explicitly so it never reuses the Atlas URI that
+  conversation-chat consumes.
+- `SENDGRID_SANDBOX_MODE=true` (default) makes SendGrid return 202
+  without delivering. Audit rows still get `status=SENT` because
+  SendGrid considered the request accepted; that is the intended
+  semantics for sandbox testing.
+- Spring Boot bakes `SERVER_PORT` at boot from the env var; the
+  container always listens on 8080 internally and is host-mapped to
+  8089 by compose.
+- Required env vars (`SENDGRID_API_KEY`, `MONGO_URI`, `JWT_SECRET`,
+  `EMAIL_FROM_DEFAULT`) are validated by `@NotBlank`; the container
+  refuses to start if any is empty.
+
 ---
 
 ## 7. Data stores
@@ -430,6 +506,7 @@ src/
 |---|---|---|---|
 | Postgres | Supabase (hosted) | Tenant auth DB — `tenants`, `users`, `user_tenants` | ✓ |
 | MongoDB | Atlas (hosted) | conversation-chat sessions + turn history | ✓ |
+| MongoDB | docker-compose (`email-mongo`) | UN_email_send_ms audit log — `email_audit.email_events` | `email-mongo-data` volume |
 | Redis | docker-compose | conversation-chat session cache | only compose volume |
 | Qdrant | docker-compose | vector DB slot (rubric) | `qdrant-data` volume |
 | in-memory | chat-orch | SessionStore (per-process) | ❌ reset on restart |
