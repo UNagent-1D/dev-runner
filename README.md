@@ -27,6 +27,7 @@ working stack.
 | `Hospital-MP/` | [UNagent-1D/Hospital-MP](https://github.com/UNagent-1D/Hospital-MP) | `main` | Python/Flask mock hospital scheduling API |
 | `Metricas/` | [UNagent-1D/Metricas](https://github.com/UNagent-1D/Metricas) | `main` | Go/Gin KPI service (backs the Analytics dashboard) |
 | `FrontEnd/` | [UNagent-1D/FrontEnd](https://github.com/UNagent-1D/FrontEnd) | `main` | React 19 + Vite admin dashboard |
+| `UN_email_send_ms/` | [UNagent-1D/UN_email_send_ms](https://github.com/UNagent-1D/UN_email_send_ms) | `main` | Java/Spring Boot email dispatch + audit (SendGrid + local Mongo) |
 
 All submodules track their upstream `main`. Bump to the newest code
 with `git submodule update --remote --merge`, then commit the pointer
@@ -86,6 +87,7 @@ Sign in at http://localhost:3000 with `admin@demo.local` / `demo1234`.
 | chat-orch | http://localhost:8000 |
 | Metricas | http://localhost:8091 |
 | Hospital Mock | http://localhost:8092 |
+| Email service | http://localhost:8089 |
 | Qdrant | http://localhost:6333 |
 
 Internally, services talk over the compose network by service name

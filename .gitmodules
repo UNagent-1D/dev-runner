@@ -23,3 +23,7 @@
 [submodule "agent-runtime"]
 	path = agent-runtime
 	url = git@github.com:UNagent-1D/agent-runtime.git
+[submodule "UN_email_send_ms"]
+	path = UN_email_send_ms
+	url = git@github.com:UNagent-1D/UN_email_send_ms.git
+	branch = main
