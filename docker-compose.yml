@@ -96,6 +96,7 @@ services:
       PORT: "3100"
       CONVERSATION_CHAT_URL: "http://conversation-chat:8082"
       HOSPITAL_MOCK_URL: "http://hospital-mock:8080"
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
       OPENAI_DEFAULT_MODEL: ${OPENAI_DEFAULT_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
     ports:
       - "3100:3100"
