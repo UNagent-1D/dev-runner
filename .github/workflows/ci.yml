@@ -13,10 +13,13 @@ jobs:
     name: docker compose config
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (with submodules)
+      - name: Checkout (umbrella only)
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          # Submodules are intentionally NOT fetched. docker compose config
+          # validates YAML + env interpolation, which doesn't require the
+          # build contexts to exist on disk. Avoids needing a PAT in this repo.
+          submodules: false
           fetch-depth: 1
 
       - name: docker compose config --quiet
