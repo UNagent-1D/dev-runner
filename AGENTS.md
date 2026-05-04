@@ -35,7 +35,7 @@ Commits here should only change: submodule pointers, the compose file,
            ├─────────────▶  chat-orch  ──┬─▶  hospital-mock (mock data)
            │                :8000         │   :8092
            │    POST /v1/chat             │
-           │    GET  /v1/chat/stream      ├─▶  Metricas (counters)
+           │    GET  /v1/chat/stream      ├─▶  Compliance (counters + audit)
            │    POST /v1/feedback         │   :8091
            │                              │
            │                              ├─▶  OpenRouter (LLM, OpenAI-compat)
@@ -47,7 +47,7 @@ Commits here should only change: submodule pointers, the compose file,
            │                                  conversation-chat (:8082)
            │                                  sessions + history (Mongo/Redis)
            │
-           └─────────────▶  metricas   ──  (polled every 10 s from Analytics)
+           └─────────────▶  compliance ──  (polled every 10 s from Analytics)
                             :8091
 
   Telegram ──▶  chat-orch (long-poll getUpdates, same runtime as /v1/chat)
@@ -71,7 +71,7 @@ Python, TypeScript, Java**.
 | `conversation-chat/` | UNagent-1D/conversation-chat | Go (Gin, mongo-driver, go-redis, go-openai) | Session + history service. Wired via agent-runtime (see §6.3). |
 | `agent-runtime/` | UNagent-1D/agent-runtime | TypeScript (Express 5, Node.js) | ACR stub + tenant stub + session proxy. Bridges chat-orch → conversation-chat. |
 | `Hospital-MP/` | UNagent-1D/Hospital-MP | Python 3.12 (Flask) | Mock scheduling API. Five endpoints per `hospital_mock_api_requirements.docx.md`. |
-| `Metricas/` | UNagent-1D/Metricas | Go (Gin, prometheus client) | In-memory KPI counters + daily buckets + CORS + /stats endpoints. |
+| `Compliance/` | (in-tree, not a submodule) | Python 3.12 (FastAPI, motor) | KPI counters + daily buckets + audit-log writer (Mongo). Back-compat with the old Metricas wire contract. |
 | `FrontEnd/` | UNagent-1D/FrontEnd | TypeScript (React 19, Vite, Tailwind, shadcn/ui, TanStack Query, recharts, react-hook-form, zod, Zustand) | Admin dashboard. |
 | `UN_email_send_ms/` | UNagent-1D/UN_email_send_ms | Java 21 (Spring Boot 3.3.x, Spring Data MongoDB, sendgrid-java, jjwt) | Outbound-email dispatch + audit trail. Sends via SendGrid, persists every attempt to a dedicated local Mongo (`email_events`). |
 
@@ -148,9 +148,11 @@ Optional:
 | Var | Default | Role |
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | unset | Enables Telegram ingress (BotFather) |
-| `TELEGRAM_DEFAULT_TENANT_ID` | `demo-tenant` | Metricas bucket for Telegram traffic |
+| `TELEGRAM_DEFAULT_TENANT_ID` | `demo-tenant` | Compliance/metrics bucket for Telegram traffic |
+| `MONGO_URI_COMPLIANCE` | `mongodb://email-mongo:27017` | Compliance — where the audit collection is written. Override to use Atlas or another host. |
+| `MONGO_DB_COMPLIANCE` | `UN_compliance_db` | Compliance — DB name for the `audit_logs` collection |
 | `VITE_ORCH_API_URL` | `http://localhost:8000` | Frontend override |
-| `VITE_METRICAS_API_URL` | `http://localhost:8091` | Frontend override |
+| `VITE_METRICAS_API_URL` | `http://localhost:8091` | Frontend override (still named METRICAS for back-compat — points at Compliance now) |
 | `VITE_TENANT_API_URL` | `http://localhost:8080` | Frontend override |
 | `VITE_CHAT_API_URL` | `http://localhost:8082/api/v1` | Frontend override |
 | `SENDGRID_API_KEY` | unset | UN_email_send_ms — required if you actually want delivery; in sandbox it is unused but the env var still has to exist |
@@ -294,23 +296,32 @@ for patient `HOSP-PAT-00492`.
 
 Don't persist — on-purpose reset per restart.
 
-### 6.5 Metricas (Go / Gin)
+### 6.5 Compliance (Python / FastAPI)
+
+In-tree at `Compliance/` (not a submodule). Replaces the old Go Metricas
+service while keeping its wire contract intact, so `chat-orch::MetricasClient`
+and the FrontEnd Analytics page need no change.
 
 ```
-main.go
-  tenantStats              rolling totals per tenant (already existed)
-  daily                    map[tenant_id][YYYY-MM-DD]*dayStats  (new)
-  handleChat               POST /conversation/chat  (X-Tenant-ID)
-  handleCsat               POST /feedback/csat      (X-Tenant-ID)
-  getFrontendMetrics       GET  /stats/kpis         (public)
-  getTimeSeries            GET  /stats/timeseries?tenant_id=&days=  (public)
-  promhttp.Handler         GET  /metrics
-  corsMiddleware           wildcard CORS (reflect origin)
+Compliance/
+  main.py
+    tenant_stats               rolling totals per tenant (in-memory)
+    daily                      tenant_id → YYYY-MM-DD → DayBucket
+    legacy_chat                POST /conversation/chat  (X-Tenant-ID)        ← chat-orch.record_turn
+    legacy_csat                POST /feedback/csat      (X-Tenant-ID)        ← chat-orch.record_feedback
+    get_kpis                   GET  /stats/kpis                              ← FrontEnd Analytics
+    get_timeseries             GET  /stats/timeseries?tenant_id=&days=       ← FrontEnd Analytics
+    submit_feedback_v1         POST /v1/feedback                              (new)
+    register_event             POST /v1/event                                 (new — writes to Mongo audit_logs)
+    health                     GET  /health
+    CORSMiddleware             wildcard, allow X-Tenant-ID
+  requirements.txt             fastapi / uvicorn / motor / pydantic / dotenv
+  Dockerfile                   python:3.12-slim, listens on :8091
 ```
 
-In-memory state — counters reset on restart. `demo-tenant` is the
-default Telegram/web bucket. CSAT persists in today's bucket AND in the
-rolling tenantStats.
+Counters are in-memory (reset on restart). The audit log is persisted to
+the local `email-mongo` container by default (`MONGO_URI_COMPLIANCE`,
+DB `UN_compliance_db`, collection `audit_logs`).
 
 ### 6.6 FrontEnd (React / Vite / shadcn)
 
@@ -506,11 +517,11 @@ src/main/java/co/edu/unagent/emailsend/
 |---|---|---|---|
 | Postgres | Supabase (hosted) | Tenant auth DB — `tenants`, `users`, `user_tenants` | ✓ |
 | MongoDB | Atlas (hosted) | conversation-chat sessions + turn history | ✓ |
-| MongoDB | docker-compose (`email-mongo`) | UN_email_send_ms audit log — `email_audit.email_events` | `email-mongo-data` volume |
+| MongoDB | docker-compose (`email-mongo`) | UN_email_send_ms audit log — `email_audit.email_events`; Compliance audit log — `UN_compliance_db.audit_logs` | `email-mongo-data` volume |
 | Redis | docker-compose | conversation-chat session cache | only compose volume |
 | Qdrant | docker-compose | vector DB slot (rubric) | `qdrant-data` volume |
 | in-memory | chat-orch | SessionStore (per-process) | ❌ reset on restart |
-| in-memory | Metricas | tenantStats + daily buckets | ❌ reset on restart |
+| in-memory | Compliance | tenantStats + daily buckets | ❌ reset on restart |
 
 ---
 
@@ -556,7 +567,7 @@ src/main/java/co/edu/unagent/emailsend/
 | `tenant` exits with `network is unreachable: 2600:…:5432` | `DATABASE_URL` points at Supabase **direct** URL (IPv6-only on free tier). Switch to the **Session Pooler** URI. |
 | Browser login says "Invalid credentials" but `curl POST /auth/login` works | CORS preflight failing. Verify `Tenant/router.go::corsMiddleware` is in place and Tenant was rebuilt after changes. |
 | `/api/admin/tenants` white-screens the page | Tenant returning `{message:"..."}` instead of an array. Check `listTenantsHandler` is wired. |
-| Dashboard KPI cards empty on login | Metricas missing CORS headers. Rebuild metricas. Also: counters reset on every metricas restart — drive some traffic. |
+| Dashboard KPI cards empty on login | Compliance returned an empty `data` array. Counters reset on every compliance restart — drive some traffic. CORS is enabled by default in `Compliance/main.py`. |
 | Telegram bot silent | Check `TELEGRAM_BOT_TOKEN` + `TELEGRAM_DEFAULT_TENANT_ID` in `.env`; ensure no webhook is set (`getWebhookInfo.url == ""`); recreate container to pick up env changes. |
 | Port 8090/6379/3000 "already allocated" | Another docker project on your machine. Host port collisions — edit the left-hand port in `docker-compose.yml`. |
 | chat-orch gets 401 from conversation-chat | `AUTH_STUB=true` still requires a Bearer header. agent-runtime proxy forwards `Authorization: Bearer internal`; don't strip it. |
@@ -604,8 +615,9 @@ Features people ask about that aren't built yet:
   Profiles and Data Sources pages in the dashboard still show mock data.
 - **Operator flows** (escalation queue, active chat, customer lookup).
   Pages currently render "Coming soon" stubs.
-- **Persisted Metricas state.** Currently in-memory; a restart clears
-  the dashboard.
+- **Persisted KPI state in Compliance.** Counters and daily buckets are
+  in-memory; a restart clears the dashboard. Audit logs DO persist to
+  Mongo, so the per-event history survives.
 - **History persistence in chat-orch.** `SessionStore` is a
   `HashMap<String, Vec<ChatMessage>>`; nothing survives a restart.
 - **Voice channel** (P2-P3 per the original rubric). Not on any
@@ -623,7 +635,7 @@ Features people ask about that aren't built yet:
 | agent-runtime (TS ACR + proxy) | Daniel |
 | FrontEnd (React dashboard) | Manuel, Julian |
 | Hospital-MP (Python mock) | shared |
-| Metricas (Go KPIs) | shared |
+| Compliance (Python KPIs + audit) | Vick (@VickDiazr) |
 
 If you're an AI and you're about to change something cross-cutting,
 make sure one of the humans above gets tagged on review.

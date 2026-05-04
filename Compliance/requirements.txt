@@ -1,0 +1,5 @@
+fastapi>=0.115,<0.120
+uvicorn[standard]>=0.30,<0.40
+motor>=3.5,<4
+pydantic>=2.7,<3
+python-dotenv>=1.0,<2
