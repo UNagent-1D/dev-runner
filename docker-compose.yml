@@ -175,10 +175,11 @@ services:
       - archsoft
 
   # ---------------------------------------------------------------------------
-  # Metrics API (Go) — exposes /stats/kpis consumed by the frontend dashboard.
-  # ---------------------------------------------------------------------------
-  # ---------------------------------------------------------------------------
-  # Compliance & Metrics API (Python) — Auditoría y KPIs
+  # Compliance & Metrics API (Python/FastAPI) — back-compat for the old
+  # Metricas wire contract (/conversation/chat, /feedback/csat, /stats/kpis,
+  # /stats/timeseries) plus new audit endpoints (/v1/event, /v1/feedback).
+  # Audit log is persisted to the local email-mongo container by default;
+  # override MONGO_URI_COMPLIANCE in the umbrella .env to point elsewhere.
   # ---------------------------------------------------------------------------
   compliance:
     build:
@@ -186,8 +187,17 @@ services:
     container_name: archsoft-compliance
     ports:
       - "8091:8091"
-    env_file:
-      - ./Compliance/.env
+    environment:
+      MONGO_URI: ${MONGO_URI_COMPLIANCE:-mongodb://email-mongo:27017}
+      MONGO_DB_COMPLIANCE: ${MONGO_DB_COMPLIANCE:-UN_compliance_db}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8091/health', timeout=2).status == 200 else 1)\""]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      email-mongo:
+        condition: service_healthy
     networks:
       - archsoft
 
