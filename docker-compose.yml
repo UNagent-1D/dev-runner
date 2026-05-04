@@ -133,7 +133,7 @@ services:
       SERVER_PORT: "3000"
       CONVERSATION_CHAT_URL: "http://conversation-chat:8082"
       TENANT_SERVICE_URL: "http://tenant:8080"
-      METRICAS_URL: "http://metricas:8080"
+      METRICAS_URL: "http://compliance:8091"
       HOSPITAL_MOCK_URL: "http://hospital-mock:8080"
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_DEFAULT_TENANT_ID: ${TELEGRAM_DEFAULT_TENANT_ID:-demo-tenant}
@@ -177,12 +177,17 @@ services:
   # ---------------------------------------------------------------------------
   # Metrics API (Go) — exposes /stats/kpis consumed by the frontend dashboard.
   # ---------------------------------------------------------------------------
-  metricas:
+  # ---------------------------------------------------------------------------
+  # Compliance & Metrics API (Python) — Auditoría y KPIs
+  # ---------------------------------------------------------------------------
+  compliance:
     build:
-      context: ./Metricas
-    container_name: archsoft-metricas
+      context: ./Compliance
+    container_name: archsoft-compliance
     ports:
-      - "8091:8080"
+      - "8091:8091"
+    env_file:
+      - ./Compliance/.env
     networks:
       - archsoft
 
