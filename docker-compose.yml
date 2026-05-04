@@ -15,14 +15,27 @@ services:
     networks:
       - archsoft
 
-  qdrant:
-    image: qdrant/qdrant:latest
-    container_name: archsoft-qdrant
-    ports:
-      - "6333:6333"
-      - "6334:6334"
+  # Local Postgres backing Hospital-MP. Schema + seed are applied on first
+  # boot via /docker-entrypoint-initdb.d (Postgres convention). Subsequent
+  # restarts reuse the volume; drop the volume to re-seed.
+  hospital-postgres:
+    image: postgres:16-alpine
+    container_name: archsoft-hospital-postgres
+    environment:
+      POSTGRES_DB: ${HOSPITAL_DB_NAME:-hospital}
+      POSTGRES_USER: ${HOSPITAL_DB_USER:-hospital}
+      POSTGRES_PASSWORD: ${HOSPITAL_DB_PASSWORD:-hospital}
+    expose:
+      - "5432"
     volumes:
-      - qdrant-data:/qdrant/storage
+      - hospital-postgres-data:/var/lib/postgresql/data
+      - ./Hospital-MP/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./Hospital-MP/seed.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${HOSPITAL_DB_USER:-hospital} -d ${HOSPITAL_DB_NAME:-hospital}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     networks:
       - archsoft
 
@@ -90,8 +103,13 @@ services:
     build:
       context: ./Hospital-MP
     container_name: archsoft-hospital-mock
+    environment:
+      DATABASE_URL: postgresql://${HOSPITAL_DB_USER:-hospital}:${HOSPITAL_DB_PASSWORD:-hospital}@hospital-postgres:5432/${HOSPITAL_DB_NAME:-hospital}
     ports:
       - "8092:8080"
+    depends_on:
+      hospital-postgres:
+        condition: service_healthy
     networks:
       - archsoft
 
@@ -276,5 +294,5 @@ networks:
     driver: bridge
 
 volumes:
-  qdrant-data:
   email-mongo-data:
+  hospital-postgres-data:
