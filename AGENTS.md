@@ -52,9 +52,12 @@ Commits here should only change: submodule pointers, the compose file,
 
   Telegram ──▶  chat-orch (long-poll getUpdates, same runtime as /v1/chat)
 
-  Redis (:6379 internal) — conversation-chat session cache.
-  Qdrant (:6333) — vector DB slot (satisfies rubric NoSQL requirement).
-  MongoDB (docker-compose) — conversation-chat document store.
+  Redis (:6379 internal)            — conversation-chat session cache.
+  RabbitMQ (:5672, mgmt :15672)     — async chat_requests / chat_results queues
+                                      consumed by conversation-chat::worker and
+                                      agent-runtime::broker.
+  hospital-postgres (:5432 internal) — backing store for Hospital-MP.
+  email-mongo (:27017 internal)     — backing store for email-send + compliance audit log.
 ```
 
 Language mix (per rubric: ≥3 general-purpose languages): **Rust, Go,
@@ -282,7 +285,12 @@ both).
 
 ### 6.4 Hospital-MP (Python / Flask)
 
-Single-file service (`app.py`), in-memory dicts. Endpoints:
+`app.py` plus a thin DB layer in `db.py` (`LocalDBClient` over psycopg2,
+chain API matching supabase-py so the same code runs against either backend).
+Schema is in `schema.sql`; static seed in `seed.sql` (Python `seed.py` is
+the Supabase-only equivalent, used when `DATABASE_URL` is absent).
+
+Endpoints:
 
 - `GET /doctors` (optional `area`, `place`)
 - `GET /doctors/{doctor_id}/schedule` (optional `days_ahead`)
@@ -294,7 +302,20 @@ Single-file service (`app.py`), in-memory dicts. Endpoints:
 Seed data: 5 doctors (`doc-001` … `doc-005`), 2 pre-booked appointments
 for patient `HOSP-PAT-00492`.
 
-Don't persist — on-purpose reset per restart.
+Persistence: backed by the `hospital-postgres` compose service. Schema
+and seed are auto-applied on the first boot of the volume via Postgres'
+`/docker-entrypoint-initdb.d` convention. To re-seed, drop the
+`hospital-postgres-data` volume and recreate the container.
+
+**Common tasks:**
+
+- **Add a new doctor or pre-booked appointment:** edit `Hospital-MP/seed.sql`
+  and recycle the volume (`docker compose down -v hospital-postgres &&
+  docker compose up -d hospital-postgres`).
+- **Add a new column:** add it to `schema.sql`, then either drop the
+  volume to re-apply, or write a migration step into a new
+  `Hospital-MP/migrations/NNN_*.sql` and update the Dockerfile/compose
+  init mount accordingly.
 
 ### 6.5 Compliance (Python / FastAPI)
 
@@ -518,8 +539,9 @@ src/main/java/co/edu/unagent/emailsend/
 | Postgres | Supabase (hosted) | Tenant auth DB — `tenants`, `users`, `user_tenants` | ✓ |
 | MongoDB | Atlas (hosted) | conversation-chat sessions + turn history | ✓ |
 | MongoDB | docker-compose (`email-mongo`) | UN_email_send_ms audit log — `email_audit.email_events`; Compliance audit log — `UN_compliance_db.audit_logs` | `email-mongo-data` volume |
+| Postgres | docker-compose (`hospital-postgres`) | Hospital-MP doctors + appointments — `hospital.doctors`, `hospital.appointments`. Schema + seed applied on first boot via `/docker-entrypoint-initdb.d`. | `hospital-postgres-data` volume |
 | Redis | docker-compose | conversation-chat session cache | only compose volume |
-| Qdrant | docker-compose | vector DB slot (rubric) | `qdrant-data` volume |
+| RabbitMQ | docker-compose | chat_requests / chat_results queues for the async worker path | only compose volume (queues redeclared at boot via `definitions.json`) |
 | in-memory | chat-orch | SessionStore (per-process) | ❌ reset on restart |
 | in-memory | Compliance | tenantStats + daily buckets | ❌ reset on restart |
 
@@ -571,7 +593,8 @@ src/main/java/co/edu/unagent/emailsend/
 | Telegram bot silent | Check `TELEGRAM_BOT_TOKEN` + `TELEGRAM_DEFAULT_TENANT_ID` in `.env`; ensure no webhook is set (`getWebhookInfo.url == ""`); recreate container to pick up env changes. |
 | Port 8090/6379/3000 "already allocated" | Another docker project on your machine. Host port collisions — edit the left-hand port in `docker-compose.yml`. |
 | chat-orch gets 401 from conversation-chat | `AUTH_STUB=true` still requires a Bearer header. agent-runtime proxy forwards `Authorization: Bearer internal`; don't strip it. |
-| conversation-chat exits on startup | Likely Mongo or Redis not ready. Check `depends_on` health conditions; run `docker compose logs mongo redis`. |
+| conversation-chat exits on startup | Likely Atlas (`MONGO_URI`), Redis, or RabbitMQ not reachable. Check `depends_on` health conditions; run `docker compose logs redis rabbitmq`. Atlas issues won't show local logs — verify the SRV URI from outside the container. |
+| hospital-mock can't reach the DB | The `hospital-postgres` container hadn't passed `pg_isready` when `hospital-mock` started — the `depends_on: condition: service_healthy` should prevent this, but if you scaled or restarted hospital-mock standalone, recreate it after Postgres is up. |
 | agent-runtime returns 502 on `/api/v1/sessions` | conversation-chat is down or not yet healthy. Run `docker compose logs conversation-chat` and verify Mongo/Redis are up first. |
 | ACR config returns wrong model | `OPENAI_DEFAULT_MODEL` env var in the agent-runtime container overrides the code default. Check `docker compose config agent-runtime`. |
 | frontend docker build `chmod: Operation not permitted` | `USER appuser` must come **after** the `chmod +x entrypoint.sh` step. |
@@ -620,8 +643,34 @@ Features people ask about that aren't built yet:
   Mongo, so the per-event history survives.
 - **History persistence in chat-orch.** `SessionStore` is a
   `HashMap<String, Vec<ChatMessage>>`; nothing survives a restart.
-- **Voice channel** (P2-P3 per the original rubric). Not on any
-  current branch.
+- **Voice channel** (Twilio). Env vars (`TWILIO_*`) are wired through
+  `chat-orch` in compose so the contract is in place, but no service
+  consumes them yet. See `.env.example` for credential layout.
+
+---
+
+## 11.1 Deployment
+
+Local dev: `docker compose up --build -d` is the only blessed path.
+
+Production target: a single Oracle Cloud Always Free VM
+(`VM.Standard.A1.Flex`, ARM Ampere, 4 OCPU / 24 GB) running the same
+compose stack. Front door is Cloudflare:
+
+- **Cloudflare Pages** hosts the FrontEnd Vite build. Set the four
+  `VITE_*` URLs as Pages env vars at build time.
+- **Cloudflare Tunnel** (`cloudflared`) runs as a systemd unit on the VM
+  and exposes the backend ports (`8080`, `8000`, `8082`, `8089`, `8091`,
+  `3100`) over Cloudflare's edge — no inbound firewall rules needed on
+  the VM.
+- Hosted state stays on Supabase (Postgres) and Atlas (Mongo for
+  conversation-chat sessions). `hospital-postgres`, `email-mongo`,
+  `redis`, and `rabbitmq` run as containers on the VM (cheap, simple,
+  and keeps the audit log + KPI bucket inside one host).
+
+Do **not** try to deploy this stack to Cloudflare Workers. The Rust /
+Go / Java / Python services are long-running binaries with persistent
+TCP connections (AMQP, Mongo) that the Workers runtime cannot host.
 
 ---
 
