@@ -45,6 +45,25 @@ services:
     networks:
       - archsoft
 
+  # Message broker — RabbitMQ with management UI.
+  # Built from UN_message_broker_mb which pre-declares chat_requests +
+  # chat_results queues via definitions.json.
+  rabbitmq:
+    build:
+      context: ./UN_message_broker_mb
+    container_name: archsoft-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - archsoft
+
   # ---------------------------------------------------------------------------
   # Application services
   # ---------------------------------------------------------------------------
@@ -97,6 +116,7 @@ services:
       AUTH_STUB_ROLE: "app_admin"
       AUTH_STUB_EMAIL: "internal@platform.local"
       DEFAULT_IDLE_TIMEOUT_SECONDS: "300"
+      RABBITMQ_URL: "amqp://rabbitmq:5672"
     ports:
       - "8082:8082"
     depends_on:
@@ -104,6 +124,8 @@ services:
         condition: service_healthy
       agent-runtime:
         condition: service_started
+      rabbitmq:
+        condition: service_healthy
     networks:
       - archsoft
 
@@ -117,10 +139,13 @@ services:
       HOSPITAL_MOCK_URL: "http://hospital-mock:8080"
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
       OPENAI_DEFAULT_MODEL: ${OPENAI_DEFAULT_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
+      RABBITMQ_URL: "amqp://rabbitmq:5672"
     ports:
       - "3100:3100"
     depends_on:
       - hospital-mock
+      rabbitmq:
+        condition: service_healthy
     networks:
       - archsoft
 

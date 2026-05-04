@@ -27,3 +27,6 @@
 	path = UN_email_send_ms
 	url = git@github.com:UNagent-1D/UN_email_send_ms.git
 	branch = main
+[submodule "UN_message_broker_mb"]
+	path = UN_message_broker_mb
+	url = git@github.com:UNagent-1D/UN_message_broker_mb.git
