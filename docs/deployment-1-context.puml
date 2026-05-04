@@ -1,0 +1,77 @@
+@startuml UNAgent_Deployment_Context
+!theme plain
+title **UNAgent — Deployment (1/2): System Context**\nDevices, edge, and external SaaS. Solid = communication. Dashed = dependency.
+
+skinparam shadowing false
+skinparam roundCorner 12
+skinparam defaultFontName "Inter, Helvetica, sans-serif"
+skinparam defaultFontSize 12
+skinparam ArrowColor #444
+skinparam ArrowFontSize 11
+skinparam NodeBackgroundColor #F0F4FF
+skinparam NodeBorderColor #4A6FB5
+skinparam ComponentBackgroundColor #FFF8E1
+skinparam Style strictuml
+left to right direction
+
+' ----------- left column: clients -----------
+node "End-user laptop" <<device>> as devClient {
+  component "Browser" <<executionEnvironment>> as ee_browser
+}
+
+node "Mobile / desktop" <<device>> as devTg {
+  component "Telegram client" <<executionEnvironment>> as ee_tg
+}
+
+' ----------- middle column: edge -----------
+node "Cloudflare edge" <<device>> as devCf {
+  component "Pages\napp.<domain>" <<executionEnvironment>> as ee_pages
+  component "Tunnel\n(cloudflared)" <<executionEnvironment>> as ee_tunnel
+}
+
+' ----------- middle-right: host -----------
+node "Host\nLinux + Docker engine" <<device>> as devHost {
+  component "archsoft (bridge)\n12 containers" <<executionEnvironment>> as ee_host
+  note right of ee_host
+    Detailed in
+    diagram 2/2
+  end note
+}
+
+' ----------- right column: external SaaS -----------
+node "External managed services" <<device>> as devExt {
+  component "Supabase\nPostgres" <<executionEnvironment>> as ee_sb
+  component "MongoDB\nAtlas" <<executionEnvironment>> as ee_atlas
+  component "OpenRouter\nLLM gateway" <<executionEnvironment>> as ee_or
+  component "SendGrid\nemail" <<executionEnvironment>> as ee_sg
+  component "Telegram\nBot API" <<executionEnvironment>> as ee_tgapi
+}
+
+' ===== communication paths (solid lines) =====
+devClient -- devCf : <<HTTPS>> static + API
+devCf     -- devHost : <<HTTPS / mTLS>>\noutbound from cloudflared
+
+devTg     -- devExt : <<HTTPS>>
+devHost   -- devExt : <<HTTPS / TLS / SRV>>\nLLM, mail, DBs, Telegram
+
+' ===== layout hints to keep columns aligned =====
+devClient -[hidden]down- devTg
+ee_pages  -[hidden]down- ee_tunnel
+ee_sb     -[hidden]down- ee_atlas
+ee_atlas  -[hidden]down- ee_or
+ee_or     -[hidden]down- ee_sg
+ee_sg     -[hidden]down- ee_tgapi
+
+note bottom of devCf
+  Cloudflare DNS (zone records) routes:
+  • app.<domain>            → Pages
+  • api/orch/chat/email/metrics.<domain> → Tunnel
+end note
+
+note bottom of devHost
+  cloudflared opens **outbound** TCP to the
+  Cloudflare edge. Only port 22 needs to be
+  reachable on the host (for SSH).
+end note
+
+@enduml
