@@ -143,7 +143,8 @@ services:
     ports:
       - "3100:3100"
     depends_on:
-      - hospital-mock
+      hospital-mock:
+        condition: service_started
       rabbitmq:
         condition: service_healthy
     networks:
