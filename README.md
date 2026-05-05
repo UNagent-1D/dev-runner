@@ -23,9 +23,10 @@ working stack.
 |---|---|---|---|
 | `chat-orch/` | [UNagent-1D/chat-orch](https://github.com/UNagent-1D/chat-orch) | `main` | Rust/Axum orchestrator — runs the LLM turn loop + Telegram long-poll + SSE to the frontend |
 | `Tenant/` | [UNagent-1D/Tenant](https://github.com/UNagent-1D/Tenant) | `main` | Go/Gin auth + tenant admin API |
-| `conversation-chat/` | [UNagent-1D/conversation-chat](https://github.com/UNagent-1D/conversation-chat) | `main` | Go/Gin session service (used by operator flows; not on the hot path for the demo) |
+| `conversation-chat/` | [UNagent-1D/conversation-chat](https://github.com/UNagent-1D/conversation-chat) | `main` | Go/Gin session + history service (wired via agent-runtime) |
+| `agent-runtime/` | [UNagent-1D/agent-runtime](https://github.com/UNagent-1D/agent-runtime) | `main` | TypeScript/Express 5 proxy bridging chat-orch to conversation-chat |
 | `Hospital-MP/` | [UNagent-1D/Hospital-MP](https://github.com/UNagent-1D/Hospital-MP) | `main` | Python/Flask mock hospital scheduling API |
-| `Metricas/` | [UNagent-1D/Metricas](https://github.com/UNagent-1D/Metricas) | `main` | Go/Gin KPI service (backs the Analytics dashboard) |
+| `Compliance/` | (in-tree, not a submodule) | N/A | Python/FastAPI KPI counters + daily buckets + audit-log writer |
 | `FrontEnd/` | [UNagent-1D/FrontEnd](https://github.com/UNagent-1D/FrontEnd) | `main` | React 19 + Vite admin dashboard |
 | `UN_email_send_ms/` | [UNagent-1D/UN_email_send_ms](https://github.com/UNagent-1D/UN_email_send_ms) | `main` | Java/Spring Boot email dispatch + audit (SendGrid + local Mongo) |
 
@@ -42,8 +43,7 @@ changes.
 - **Telegram Bot** — optional; skip the token in `.env` to disable the
   channel.
 
-The only containerized stateful services are **Redis** and **Qdrant**
-(both in-memory/volume-backed and local).
+The containerized stateful services include **Redis**, **RabbitMQ**, **hospital-postgres**, and **email-mongo** (local/volume-backed).
 
 ## Quickstart
 
@@ -84,14 +84,14 @@ Sign in at http://localhost:3000 with `admin@demo.local` / `demo1234`.
 | Frontend | http://localhost:3000 |
 | Tenant API | http://localhost:8080 |
 | conversation-chat | http://localhost:8082 |
+| agent-runtime | http://localhost:3100 |
 | chat-orch | http://localhost:8000 |
-| Metricas | http://localhost:8091 |
+| Compliance | http://localhost:8091 |
 | Hospital Mock | http://localhost:8092 |
 | Email service | http://localhost:8089 |
-| Qdrant | http://localhost:6333 |
 
 Internally, services talk over the compose network by service name
-(`tenant:8080`, `metricas:8080`, etc.).
+(`tenant:8080`, `compliance:8091`, etc.).
 
 ## End-to-end demo flow
 
