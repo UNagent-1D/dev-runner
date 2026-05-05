@@ -1,18 +1,23 @@
 @startuml UNAgent_Deployment_Context
 !theme plain
-title **UNAgent — Deployment (1/2): System Context**\nDevices, edge, and external SaaS. Solid = communication. Dashed = dependency.
+title **UNAgent — Deployment (1/2): System Context**\nDevices, edge, and external SaaS.\nColor coded for readability.
 
 skinparam shadowing false
 skinparam roundCorner 12
 skinparam defaultFontName "Inter, Helvetica, sans-serif"
 skinparam defaultFontSize 12
-skinparam ArrowColor #444
-skinparam ArrowFontSize 11
+
+' Estilos generales
 skinparam NodeBackgroundColor #F0F4FF
 skinparam NodeBorderColor #4A6FB5
 skinparam ComponentBackgroundColor #FFF8E1
+skinparam ComponentBorderColor #B89800
 skinparam Style strictuml
-left to right direction
+
+' --- SEPARACIÓN Y ORTOGONALIDAD ---
+skinparam linetype ortho
+skinparam nodesep 80
+skinparam ranksep 100
 
 ' ----------- left column: clients -----------
 node "End-user laptop" <<device>> as devClient {
@@ -25,16 +30,18 @@ node "Mobile / desktop" <<device>> as devTg {
 
 ' ----------- middle column: edge -----------
 node "Cloudflare edge" <<device>> as devCf {
-  component "Pages\napp.<domain>" <<executionEnvironment>> as ee_pages
+  component "Pages\napp.unagent.site" <<executionEnvironment>> as ee_pages
   component "Tunnel\n(cloudflared)" <<executionEnvironment>> as ee_tunnel
 }
 
 ' ----------- middle-right: host -----------
 node "Host\nLinux + Docker engine" <<device>> as devHost {
-  component "archsoft (bridge)\n12 containers" <<executionEnvironment>> as ee_host
+  component "archsoft (bridge)\n13 containers" <<executionEnvironment>> as ee_host
   note right of ee_host
     Detailed in
-    diagram 2/2
+    diagram 2/2.
+    Maps 1:1 to the
+    C&C view (§3.1).
   end note
 }
 
@@ -47,25 +54,39 @@ node "External managed services" <<device>> as devExt {
   component "Telegram\nBot API" <<executionEnvironment>> as ee_tgapi
 }
 
+' ===== layout hints (estructura vertical para apilar) =====
+devClient -[hidden]down-> devTg
+
+ee_pages  -[hidden]down-> ee_tunnel
+
+ee_sb     -[hidden]down-> ee_atlas
+ee_atlas  -[hidden]down-> ee_or
+ee_or     -[hidden]down-> ee_sg
+ee_sg     -[hidden]down-> ee_tgapi
+
+' ===== layout hints (estructura horizontal para columnas) =====
+devClient -[hidden]right-> devCf
+devCf     -[hidden]right-> devHost
+devHost   -[hidden]right-> devExt
+
 ' ===== communication paths (solid lines) =====
-devClient -- devCf : <<HTTPS>> static + API
-devCf     -- devHost : <<HTTPS / mTLS>>\noutbound from cloudflared
+' Azul para HTTPS/Web general
+devClient -[#2E86C1]right-> devCf : <color:#2E86C1><<HTTPS>></color>\nstatic + API
 
-devTg     -- devExt : <<HTTPS>>
-devHost   -- devExt : <<HTTPS / TLS / SRV>>\nLLM, mail, DBs, Telegram
+' Morado para el Túnel (diferenciar del tráfico abierto)
+devCf     -[#8E44AD]right-> devHost : <color:#8E44AD><<HTTPS / mTLS>></color>\noutbound from cloudflared
 
-' ===== layout hints to keep columns aligned =====
-devClient -[hidden]down- devTg
-ee_pages  -[hidden]down- ee_tunnel
-ee_sb     -[hidden]down- ee_atlas
-ee_atlas  -[hidden]down- ee_or
-ee_or     -[hidden]down- ee_sg
-ee_sg     -[hidden]down- ee_tgapi
+' Telegram cliente a Telegram API (Larga distancia: triple guion)
+devTg     ---[#2E86C1]right---> devExt : <color:#2E86C1><<HTTPS>></color>
 
+' Verde para integraciones de backend
+devHost   -[#28B463]right-> devExt : <color:#28B463><<HTTPS / TLS / SRV>></color>\nLLM, mail, DBs, Telegram
+
+' ===== Notas =====
 note bottom of devCf
   Cloudflare DNS (zone records) routes:
-  • app.<domain>            → Pages
-  • api/orch/chat/email/metrics.<domain> → Tunnel
+  • app.unagent.site                          → Pages
+  • api/orch/chat/email/metrics.unagent.site  → Tunnel
 end note
 
 note bottom of devHost
