@@ -1,0 +1,132 @@
+@startuml UNAgent_Deployment_Host
+!theme plain
+title **UNAgent — Deployment (2/2): Host-internal view**\nEverything inside the ""archsoft"" Docker network.\nSolid = communication. Dashed = dependency / persists.
+
+skinparam shadowing false
+skinparam roundCorner 12
+skinparam defaultFontName "Inter, Helvetica, sans-serif"
+skinparam defaultFontSize 12
+skinparam ArrowColor #444
+skinparam ArrowFontSize 11
+skinparam ArrowFontColor #333
+skinparam NodeBackgroundColor #F0F4FF
+skinparam NodeBorderColor #4A6FB5
+skinparam ComponentBackgroundColor #FFF8E1
+skinparam ComponentBorderColor #B89800
+skinparam ArtifactBackgroundColor #F5F5F5
+skinparam DatabaseBackgroundColor #FFF6E0
+skinparam Style strictuml
+top to bottom direction
+
+' ==========================================================
+' Three vertical bands using `together { }` to control layout
+' ==========================================================
+
+node "Host  ·  Docker engine 29 + containerd 2.2.3" <<device>> as host {
+
+  ' --- BAND A: ingress / frontend ---
+  together {
+    component "**frontend**\nnginx 1.27 + Vite bundle\n3000 → 80" <<executionEnvironment>> as fe
+    component "**chat-orch**\nRust / Axum\n8000 → 3000" <<executionEnvironment>> as orch
+    component "**tenant**\nGo / Gin\n8080" <<executionEnvironment>> as tenant
+  }
+
+  ' --- BAND B: agent + conversation + compliance ---
+  together {
+    component "**agent-runtime**\nNode 20 / Express\n3100" <<executionEnvironment>> as agent
+    component "**conversation-chat**\nGo / Gin\n8082" <<executionEnvironment>> as conv
+    component "**compliance**\nPython / FastAPI\n8091" <<executionEnvironment>> as comp
+  }
+
+  ' --- BAND C: tools + email ---
+  together {
+    component "**hospital-mock**\nPython / Flask\n8092 → 8080" <<executionEnvironment>> as hosp
+    component "**email-send**\nJava / Spring Boot 3.3\n8089 → 8080" <<executionEnvironment>> as email
+  }
+
+  ' --- BAND D: infrastructure ---
+  together {
+    component "**redis**\nredis:7-alpine\n6379" <<executionEnvironment>> as redis
+    component "**rabbitmq**\nrabbitmq:3-management\n5672 / 15672" <<executionEnvironment>> as rmq
+    component "**hospital-postgres**\npostgres:16-alpine\n5432" <<executionEnvironment>> as hpg
+    component "**email-mongo**\nmongo:7\n27017" <<executionEnvironment>> as emongo
+  }
+
+  ' --- volumes ---
+  together {
+    artifact "hospital-postgres-data" as volH
+    artifact "email-mongo-data" as volE
+  }
+}
+
+' ==========================================================
+' Communication paths (solid)  — minimised, one per real flow
+' ==========================================================
+
+' From the edge (drawn as a single ingress arrow per service)
+fe     <-- orch  : <<HTTP / SSE>> /v1/chat/stream
+fe     <-- tenant: <<HTTP>> /auth/login
+fe     <-- comp  : <<HTTP>> /stats/*
+
+' chat-orch fan-out
+orch -- agent : <<HTTP>>\nsessions, turns
+orch -- comp  : <<HTTP>>\nrecord_turn, csat
+orch -- tenant: <<HTTP>>\nJWT validate
+orch -- hosp  : <<HTTP>>\ntool calls
+
+' agent-runtime
+agent -- conv : <<HTTP>> proxy
+agent -- hosp : <<HTTP>>
+agent -- rmq  : <<AMQP>>
+
+' conversation-chat
+conv -- redis : <<TCP>> session cache
+conv -- rmq   : <<AMQP>> consume
+
+' tools / persistence
+hosp  -- hpg     : <<TCP>> psycopg2
+comp  -- emongo  : <<TCP>> motor
+email -- emongo  : <<TCP>> mongo-driver
+
+' ==========================================================
+' Lifecycle dependencies (dashed, light)
+' ==========================================================
+hosp  ..> hpg     : <<healthy>>
+conv  ..> redis   : <<healthy>>
+conv  ..> rmq     : <<healthy>>
+conv  ..> agent   : <<started>>
+agent ..> rmq     : <<healthy>>
+agent ..> hosp    : <<started>>
+orch  ..> agent   : <<started>>
+orch  ..> conv    : <<started>>
+orch  ..> hosp    : <<started>>
+fe    ..> tenant  : <<healthy>>
+fe    ..> conv    : <<started>>
+comp  ..> emongo  : <<healthy>>
+email ..> emongo  : <<healthy>>
+
+' ==========================================================
+' Persistence (dashed)
+' ==========================================================
+hpg    ..> volH : <<persists>>
+emongo ..> volE : <<persists>>
+
+' ==========================================================
+' Layout hints — keep bands stacked, no crossings
+' ==========================================================
+fe     -[hidden]right- orch
+orch   -[hidden]right- tenant
+agent  -[hidden]right- conv
+conv   -[hidden]right- comp
+hosp   -[hidden]right- email
+redis  -[hidden]right- rmq
+rmq    -[hidden]right- hpg
+hpg    -[hidden]right- emongo
+volH   -[hidden]right- volE
+
+fe     -[hidden]down- agent
+agent  -[hidden]down- hosp
+hosp   -[hidden]down- redis
+redis  -[hidden]down- volH
+
+@enduml
