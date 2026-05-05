@@ -289,6 +289,33 @@ services:
     networks:
       - archsoft
 
+  # ---------------------------------------------------------------------------
+  # Grafana — observability dashboards. Empty out of the box; configure
+  # data sources via the UI (Compliance JSON via the Infinity plugin,
+  # RabbitMQ exporter at :15692, etc.). Persistent state in the
+  # `grafana-data` named volume.
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana-oss:11.6.0
+    container_name: archsoft-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_INSTALL_PLUGINS: yesoreyeram-infinity-datasource
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health | grep -q ok"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - archsoft
+
 networks:
   archsoft:
     driver: bridge
@@ -296,3 +323,4 @@ networks:
 volumes:
   email-mongo-data:
   hospital-postgres-data:
+  grafana-data:
