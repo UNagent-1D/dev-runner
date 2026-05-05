@@ -1,14 +1,13 @@
 @startuml UNAgent_Deployment_Host
 !theme plain
-title **UNAgent — Deployment (2/2): Host-internal view**\nEverything inside the ""archsoft"" Docker network.\nSolid = communication. Dashed = dependency / persists.
+title **UNAgent — Deployment (2/2): Host-internal view**\nEverything inside the ""archsoft"" Docker network.\nColor coded for readability — maps 1:1 to the C&C view (§3.1).
 
 skinparam shadowing false
 skinparam roundCorner 12
 skinparam defaultFontName "Inter, Helvetica, sans-serif"
 skinparam defaultFontSize 12
-skinparam ArrowColor #444
-skinparam ArrowFontSize 11
-skinparam ArrowFontColor #333
+
+' Estilos generales de componentes
 skinparam NodeBackgroundColor #F0F4FF
 skinparam NodeBorderColor #4A6FB5
 skinparam ComponentBackgroundColor #FFF8E1
@@ -16,11 +15,11 @@ skinparam ComponentBorderColor #B89800
 skinparam ArtifactBackgroundColor #F5F5F5
 skinparam DatabaseBackgroundColor #FFF6E0
 skinparam Style strictuml
-top to bottom direction
 
-' ==========================================================
-' Three vertical bands using `together { }` to control layout
-' ==========================================================
+' --- SEPARACIÓN MÁXIMA PARA EVITAR SUPERPOSICIÓN ---
+skinparam linetype ortho
+skinparam nodesep 100
+skinparam ranksep 120
 
 node "Host  ·  Docker engine 29 + containerd 2.2.3" <<device>> as host {
 
@@ -42,91 +41,110 @@ node "Host  ·  Docker engine 29 + containerd 2.2.3" <<device>> as host {
   together {
     component "**hospital-mock**\nPython / Flask\n8092 → 8080" <<executionEnvironment>> as hosp
     component "**email-send**\nJava / Spring Boot 3.3\n8089 → 8080" <<executionEnvironment>> as email
+    component "**grafana**\ngrafana-oss:11.6.0\n3001 → 3000" <<executionEnvironment>> as graf
   }
 
   ' --- BAND D: infrastructure ---
   together {
-    component "**redis**\nredis:7-alpine\n6379" <<executionEnvironment>> as redis
     component "**rabbitmq**\nrabbitmq:3-management\n5672 / 15672" <<executionEnvironment>> as rmq
     component "**hospital-postgres**\npostgres:16-alpine\n5432" <<executionEnvironment>> as hpg
     component "**email-mongo**\nmongo:7\n27017" <<executionEnvironment>> as emongo
   }
 
-  ' --- volumes ---
+  ' --- BAND E: volumes ---
   together {
     artifact "hospital-postgres-data" as volH
     artifact "email-mongo-data" as volE
+    artifact "grafana-data" as volG
   }
 }
 
 ' ==========================================================
-' Communication paths (solid)  — minimised, one per real flow
+' Layout hints — Mantener estructura de la cuadricula
 ' ==========================================================
+fe -[hidden]right-> orch
+orch -[hidden]right-> tenant
 
-' From the edge (drawn as a single ingress arrow per service)
-fe     <-- orch  : <<HTTP / SSE>> /v1/chat/stream
-fe     <-- tenant: <<HTTP>> /auth/login
-fe     <-- comp  : <<HTTP>> /stats/*
+agent -[hidden]right-> conv
+conv -[hidden]right-> comp
 
-' chat-orch fan-out
-orch -- agent : <<HTTP>>\nsessions, turns
-orch -- comp  : <<HTTP>>\nrecord_turn, csat
-orch -- tenant: <<HTTP>>\nJWT validate
-orch -- hosp  : <<HTTP>>\ntool calls
+hosp -[hidden]right-> email
+email -[hidden]right-> graf
 
-' agent-runtime
-agent -- conv : <<HTTP>> proxy
-agent -- hosp : <<HTTP>>
-agent -- rmq  : <<AMQP>>
+rmq -[hidden]right-> hpg
+hpg -[hidden]right-> emongo
 
-' conversation-chat
-conv -- redis : <<TCP>> session cache
-conv -- rmq   : <<AMQP>> consume
+volH -[hidden]right-> volE
+volE -[hidden]right-> volG
 
-' tools / persistence
-hosp  -- hpg     : <<TCP>> psycopg2
-comp  -- emongo  : <<TCP>> motor
-email -- emongo  : <<TCP>> mongo-driver
+fe -[hidden]down-> agent
+agent -[hidden]down-> hosp
+hosp -[hidden]down-> rmq
+rmq -[hidden]down-> volH
+
+' ==========================================================
+' Communication paths (solid) - COLORES Y TAMAÑOS VARIABLES
+' Azul (#2E86C1) para HTTP
+' Verde (#28B463) para TCP (Bases de datos)
+' Naranja (#D68910) para AMQP
+' ==========================================================
+orch -[#2E86C1]up-> fe : <color:#2E86C1><<HTTP / SSE>></color>\n/v1/chat/stream
+tenant -[#2E86C1]left-> fe : <color:#2E86C1><<HTTP>></color> /auth/login
+comp -[#2E86C1]up-> fe : <color:#2E86C1><<HTTP>></color> /stats/*
+
+orch -[#2E86C1]down-> agent : <color:#2E86C1><<HTTP>></color>\nsessions, turns
+orch --[#2E86C1]down--> comp  : <color:#2E86C1><<HTTP>></color>\nrecord_turn, csat
+orch -[#2E86C1]right-> tenant: <color:#2E86C1><<HTTP>></color>\nJWT validate
+orch --[#2E86C1]down--> hosp  : <color:#2E86C1><<HTTP>></color>\ntool calls
+
+agent -[#2E86C1]right-> conv : <color:#2E86C1><<HTTP>></color> proxy
+agent -[#2E86C1]down-> hosp : <color:#2E86C1><<HTTP>></color>
+agent --[#D68910]down--> rmq  : <color:#D68910><<AMQP>></color>
+
+conv --[#D68910]down--> rmq   : <color:#D68910><<AMQP>></color> consume
+conv --[#2E86C1]right--> email : <color:#2E86C1><<HTTP>></color>\nsend_confirmation_email\ntool dispatch
+
+hosp -[#28B463]down-> hpg   : <color:#28B463><<TCP>></color> psycopg2
+comp --[#28B463]down--> emongo : <color:#28B463><<TCP>></color> motor
+email -[#28B463]down-> emongo : <color:#28B463><<TCP>></color> driver
 
 ' ==========================================================
 ' Lifecycle dependencies (dashed, light)
+' Gris (#888888) para separar de la logica de negocio
 ' ==========================================================
-hosp  ..> hpg     : <<healthy>>
-conv  ..> redis   : <<healthy>>
-conv  ..> rmq     : <<healthy>>
-conv  ..> agent   : <<started>>
-agent ..> rmq     : <<healthy>>
-agent ..> hosp    : <<started>>
-orch  ..> agent   : <<started>>
-orch  ..> conv    : <<started>>
-orch  ..> hosp    : <<started>>
-fe    ..> tenant  : <<healthy>>
-fe    ..> conv    : <<started>>
-comp  ..> emongo  : <<healthy>>
-email ..> emongo  : <<healthy>>
+hosp .[#888888]down.> hpg      : <color:#888888><<healthy>></color>
+conv .[#888888]down.> rmq      : <color:#888888><<healthy>></color>
+conv .[#888888]left.> agent    : <color:#888888><<started>></color>
+agent .[#888888]down.> rmq     : <color:#888888><<healthy>></color>
+agent .[#888888]down.> hosp    : <color:#888888><<started>></color>
+orch .[#888888]down.> agent    : <color:#888888><<started>></color>
+orch .[#888888]down.> conv     : <color:#888888><<started>></color>
+orch .[#888888]down.> hosp     : <color:#888888><<started>></color>
+fe .[#888888]right.> tenant   : <color:#888888><<healthy>></color>
+fe .[#888888]down.> conv      : <color:#888888><<started>></color>
+comp .[#888888]down.> emongo   : <color:#888888><<healthy>></color>
+email .[#888888]down.> emongo  : <color:#888888><<healthy>></color>
 
 ' ==========================================================
 ' Persistence (dashed)
 ' ==========================================================
-hpg    ..> volH : <<persists>>
-emongo ..> volE : <<persists>>
+hpg .[#888888]down.> volH : <color:#888888><<persists>></color>
+emongo .[#888888]down.> volE : <color:#888888><<persists>></color>
+graf .[#888888]down.> volG : <color:#888888><<persists>></color>
 
 ' ==========================================================
-' Layout hints — keep bands stacked, no crossings
+' Cross-reference to the C&C view
 ' ==========================================================
-fe     -[hidden]right- orch
-orch   -[hidden]right- tenant
-agent  -[hidden]right- conv
-conv   -[hidden]right- comp
-hosp   -[hidden]right- email
-redis  -[hidden]right- rmq
-rmq    -[hidden]right- hpg
-hpg    -[hidden]right- emongo
-volH   -[hidden]right- volE
-
-fe     -[hidden]down- agent
-agent  -[hidden]down- hosp
-hosp   -[hidden]down- redis
-redis  -[hidden]down- volH
+note bottom of host
+  **C&C ↔ Deployment mapping**
+  Each container above is the **deployment artifact** of the
+  matching component in the C&C view (§3.1):
+  • `UN_chat_orch_ms`   → chat-orch              • `UN_email_send_ms`  → email-send
+  • `UN_agent_runtime_ms` → agent-runtime         • `UN_compliance_ms`  → compliance
+  • `UN_conversation-chat_ms` → conversation-chat  • `UN_tenant_ms`      → tenant
+  • `UN_message_broker_mb` → rabbitmq             • `UN_fe`            → frontend (Pages in prod)
+  • Hospital Mock         → hospital-mock         • `UN_*_db`          → hospital-postgres / email-mongo (+ Atlas / Supabase off-host)
+  Connectors keep their roles: HTTP, SSE, long-poll, AMQP, DB_connector.
+end note
 
 @enduml

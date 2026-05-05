@@ -52,9 +52,11 @@ make_placeholder() {
   local name="$1"  label="$2"
   local png="$IMG_DIR/$name.png"
   local svg="$IMG_DIR/$name.svg"
+  local jpeg="$IMG_DIR/$name.jpeg"
+  local jpg="$IMG_DIR/$name.jpg"
 
-  # If a real PNG already exists, leave it alone
-  [ -f "$png" ] && return
+  # If a real raster image already exists in any common format, leave it alone
+  [ -f "$png" ] || [ -f "$jpeg" ] || [ -f "$jpg" ] && return 0
 
   if command -v convert >/dev/null; then
     convert -size 1100x500 xc:'#FAFAFA' -gravity Center \
