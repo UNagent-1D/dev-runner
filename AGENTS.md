@@ -23,12 +23,23 @@ Commits here should only change: submodule pointers, the compose file,
 
 ## 2. Stack at a glance
 
+Browser traffic is single-origin: the frontend container's nginx
+(`FrontEnd/nginx.conf`) serves the SPA *and* reverse-proxies every API
+path to the right backend over the internal Docker network. The browser
+only ever talks to `http://localhost:3000`. Backends still expose host
+ports (8000/8080/8082/8091/...) so devs can `curl` them directly — the
+proxy is additive.
+
 ```
-           ┌──────────────────────────── frontend  (React 19 / Vite / shadcn)
-           │                                │  admin UI, Analytics, Agent Console
-           ▼                                │  :3000
-  browser ─┤                                │
-           │  HTTP (CORS)                   ▼
+           ┌──────────────────────────── frontend  nginx  (SPA + reverse proxy)
+           │                                │  :3000  ── /v1/*       → chat-orch
+           ▼                                │         ── /auth/*     → tenant
+  browser ─┤  HTTP (same-origin)            │         ── /api/admin/ → tenant
+           │                                │         ── /api/v1/tenants/ → tenant
+           │                                │         ── /api/v1/sessions/ → conversation-chat
+           │                                │         ── /stats/*   → compliance
+           │                                ▼
+           │  (internal Docker network)
            ├─────────────▶  tenant     ──▶  Supabase Postgres
            │                :8080           (Session Pooler — IPv4)
            │
@@ -154,10 +165,10 @@ Optional:
 | `TELEGRAM_DEFAULT_TENANT_ID` | `demo-tenant` | Compliance/metrics bucket for Telegram traffic |
 | `MONGO_URI_COMPLIANCE` | `mongodb://email-mongo:27017` | Compliance — where the audit collection is written. Override to use Atlas or another host. |
 | `MONGO_DB_COMPLIANCE` | `UN_compliance_db` | Compliance — DB name for the `audit_logs` collection |
-| `VITE_ORCH_API_URL` | `http://localhost:8000` | Frontend override |
-| `VITE_METRICAS_API_URL` | `http://localhost:8091` | Frontend override (still named METRICAS for back-compat — points at Compliance now) |
-| `VITE_TENANT_API_URL` | `http://localhost:8080` | Frontend override |
-| `VITE_CHAT_API_URL` | `http://localhost:8082/api/v1` | Frontend override |
+| `VITE_ORCH_API_URL` | `` (empty — same-origin via nginx) | Frontend override; set only when the bundle must call a different origin |
+| `VITE_METRICAS_API_URL` | `` (empty — same-origin via nginx) | Frontend override (still named METRICAS for back-compat — points at Compliance now) |
+| `VITE_TENANT_API_URL` | `` (empty — same-origin via nginx) | Frontend override |
+| `VITE_CHAT_API_URL` | `/api/v1` (same-origin via nginx) | Frontend override |
 | `SENDGRID_API_KEY` | unset | UN_email_send_ms — required if you actually want delivery; in sandbox it is unused but the env var still has to exist |
 | `SENDGRID_SANDBOX_MODE` | `true` | UN_email_send_ms — when true, SendGrid accepts the request and returns 202 without delivering |
 | `EMAIL_FROM_DEFAULT` | `noreply@unagent.local` | UN_email_send_ms — sender address used when the request omits `from` |

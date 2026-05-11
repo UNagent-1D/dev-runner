@@ -210,12 +210,16 @@ services:
     build:
       context: ./FrontEnd
       args:
-        # Vite inlines these at build time. Override in .env to point the
-        # bundle at non-localhost hosts (staging, prod, LAN demos).
-        VITE_TENANT_API_URL: ${VITE_TENANT_API_URL:-http://localhost:8080}
-        VITE_ORCH_API_URL: ${VITE_ORCH_API_URL:-http://localhost:8000}
-        VITE_METRICAS_API_URL: ${VITE_METRICAS_API_URL:-http://localhost:8091}
-        VITE_CHAT_API_URL: ${VITE_CHAT_API_URL:-http://localhost:8082/api/v1}
+        # Vite inlines these at build time. The frontend nginx now reverse-
+        # proxies every API path back to the right backend (see
+        # FrontEnd/nginx.conf), so the browser stays on a single origin and
+        # the bundle uses relative URLs by default. Override here only for
+        # builds that need to hit non-same-origin backends (staging without
+        # the gateway, LAN demos pointing the bundle at a separate API host).
+        VITE_TENANT_API_URL: ${VITE_TENANT_API_URL-}
+        VITE_ORCH_API_URL: ${VITE_ORCH_API_URL-}
+        VITE_METRICAS_API_URL: ${VITE_METRICAS_API_URL-}
+        VITE_CHAT_API_URL: ${VITE_CHAT_API_URL:-/api/v1}
     container_name: archsoft-frontend
     ports:
       - "3000:80"
@@ -224,6 +228,10 @@ services:
         condition: service_healthy
       conversation-chat:
         condition: service_started
+      chat-orch:
+        condition: service_started
+      compliance:
+        condition: service_healthy
     networks:
       - archsoft
 
