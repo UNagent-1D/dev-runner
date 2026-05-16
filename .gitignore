@@ -5,9 +5,12 @@
 .env.dev
 .env.prod
 
-# Cloudflare Worker — generated artifacts + local secrets
-cloudflare-worker/wrangler.toml
+# Cloudflare Worker — local secrets only. wrangler.toml IS committed
+# (contains no secrets — just URLs + bindings — and CI needs it to deploy).
 cloudflare-worker/.dev.vars
+
+# Stray wrangler state from invocations at the umbrella root
+/.wrangler/
 cloudflare-worker/node_modules/
 cloudflare-worker/dist/
 cloudflare-worker/.wrangler/
