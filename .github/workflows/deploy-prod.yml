@@ -23,29 +23,46 @@ jobs:
     name: Verify dev deploy is green
     runs-on: ubuntu-latest
     steps:
-      - name: Check deploy-dev.yml conclusion for this SHA
+      - name: Check deploy-dev.yml conclusion for this SHA or its merge parents
         uses: actions/github-script@v7
         with:
           script: |
-            const sha = context.sha;
-            const runs = await github.rest.actions.listWorkflowRuns({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'deploy-dev.yml',
-              head_sha: sha,
-              per_page: 100,
-            });
-            const green = runs.data.workflow_runs.filter(
-              r => r.conclusion === 'success'
-            );
-            if (green.length === 0) {
+            // A push to main can be either a direct commit OR a merge commit
+            // produced by merging a PR from `dev`. In the merge-commit case
+            // the SHA didn't exist on `dev`, so deploy-dev never ran against
+            // it — but one of its PARENTS is the dev branch tip that DID
+            // get a green deploy-dev. Accept if either the merge SHA itself
+            // OR any of its parents has a successful deploy-dev run.
+            const owner = context.repo.owner;
+            const repo  = context.repo.repo;
+            const sha   = context.sha;
+
+            const commit = await github.rest.repos.getCommit({ owner, repo, ref: sha });
+            const candidates = [sha, ...commit.data.parents.map(p => p.sha)];
+            core.info(`Checking deploy-dev for SHA + parents: ${candidates.join(', ')}`);
+
+            let matched = null;
+            for (const candidate of candidates) {
+              const runs = await github.rest.actions.listWorkflowRuns({
+                owner, repo,
+                workflow_id: 'deploy-dev.yml',
+                head_sha: candidate,
+                per_page: 100,
+              });
+              const green = runs.data.workflow_runs.filter(r => r.conclusion === 'success');
+              if (green.length > 0) {
+                matched = { candidate, run: green[0] };
+                break;
+              }
+            }
+            if (!matched) {
               core.setFailed(
-                `No successful deploy-dev run for SHA ${sha}. ` +
-                `This commit must be deployed to dev (and pass there) ` +
-                `before it can ship to prod.`
+                `No successful deploy-dev run for any of: ${candidates.join(', ')}. ` +
+                `Merge a green dev branch into main; don't push directly.`
               );
             } else {
-              core.info(`✓ Found green deploy-dev run #${green[0].id} for ${sha}`);
+              core.info(`✓ deploy-dev #${matched.run.id} succeeded for ${matched.candidate}`);
+              core.info(`  ${matched.run.html_url}`);
             }
 
   deploy-backends:
