@@ -1,0 +1,58 @@
+name: PR gate (main)
+
+# Required status check on PRs targeting `main`. Mark this required in
+# branch protection alongside the other ci.yml checks.
+#
+# Refuses to merge unless:
+#   1. PR source branch is `dev` (no shortcuts from feature branches).
+#   2. The PR head SHA has a successful deploy-dev.yml run.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  actions: read
+
+jobs:
+  gate:
+    name: Verify dev → main flow
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR source branch is `dev`
+        if: github.event.pull_request.head.ref != 'dev'
+        run: |
+          echo "::error::PRs to main must come from the 'dev' branch."
+          echo "  Source branch: ${{ github.event.pull_request.head.ref }}"
+          echo "  Flow:  feature/* → dev → main"
+          exit 1
+
+      - name: Check dev-deploy is green for PR head SHA
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const sha = context.payload.pull_request.head.sha;
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'deploy-dev.yml',
+              head_sha: sha,
+              per_page: 100,
+            });
+            const green = runs.data.workflow_runs.filter(
+              r => r.conclusion === 'success'
+            );
+            if (green.length === 0) {
+              core.setFailed(
+                `No successful deploy-dev run for SHA ${sha}. ` +
+                `Merge to dev first, wait for the dev deploy to go green, ` +
+                `then re-run this check.`
+              );
+            } else {
+              core.info(`✓ deploy-dev #${green[0].id} succeeded for ${sha}`);
+              const url = green[0].html_url;
+              core.info(`  Run: ${url}`);
+            }

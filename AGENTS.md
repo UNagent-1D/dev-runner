@@ -545,16 +545,20 @@ src/main/java/co/edu/unagent/emailsend/
 
 ## 7. Data stores
 
-| Store | Location | Purpose | Persistence |
+In **production on Railway** all six stateful pieces are self-hosted Railway services (one per environment) with attached volumes — no external SaaS. In **local dev** the same images run inside `docker-compose.yml`. The `.env.dev` / `.env.prod` files in the umbrella point at Railway-internal hostnames; the local `.env` points at the compose service names.
+
+| Store | Local (compose) | Prod / dev (Railway) | Purpose |
 |---|---|---|---|
-| Postgres | Supabase (hosted) | Tenant auth DB — `tenants`, `users`, `user_tenants` | ✓ |
-| MongoDB | Atlas (hosted) | conversation-chat sessions + turn history | ✓ |
-| MongoDB | docker-compose (`email-mongo`) | UN_email_send_ms audit log — `email_audit.email_events`; Compliance audit log — `UN_compliance_db.audit_logs` | `email-mongo-data` volume |
-| Postgres | docker-compose (`hospital-postgres`) | Hospital-MP doctors + appointments — `hospital.doctors`, `hospital.appointments`. Schema + seed applied on first boot via `/docker-entrypoint-initdb.d`. | `hospital-postgres-data` volume |
-| Redis | docker-compose | conversation-chat session cache | only compose volume |
-| RabbitMQ | docker-compose | chat_requests / chat_results queues for the async worker path | only compose volume (queues redeclared at boot via `definitions.json`) |
-| in-memory | chat-orch | SessionStore (per-process) | ❌ reset on restart |
-| in-memory | Compliance | tenantStats + daily buckets | ❌ reset on restart |
+| Postgres | `tenant-postgres` (or Supabase if you kept the legacy `.env`) | `tenant-postgres` Railway service (`postgres:16-alpine` + `Tenant/sql/init_schema.sql`) | Tenant auth DB — `tenants`, `users`, `user_tenants` |
+| MongoDB | conversation-chat → Atlas (legacy `.env`) | `conversation-mongo` Railway service (`mongo:7`) | conversation-chat sessions + turn history |
+| MongoDB | `email-mongo` | `email-mongo` Railway service (`mongo:7`) | UN_email_send_ms `email_audit.email_events`; Compliance `UN_compliance_db.audit_logs` |
+| Postgres | `hospital-postgres` | `hospital-postgres` Railway service (`postgres:16-alpine` + `Hospital-MP/{schema,seed}.sql`) | Hospital-MP doctors + appointments |
+| Redis | `redis` | `redis` Railway service (`redis:7-alpine`) | conversation-chat session cache |
+| RabbitMQ | `rabbitmq` (from `UN_message_broker_mb`) | `rabbitmq` Railway service (same custom image) | chat_requests / chat_results queues for the async worker path |
+| in-memory | chat-orch | chat-orch | SessionStore (per-process) — ❌ reset on restart |
+| in-memory | Compliance | Compliance | tenantStats + daily buckets — ❌ reset on restart |
+
+Init scripts for `tenant-postgres` and `hospital-postgres` are baked into custom Dockerfiles at `scripts/data-stores/`. Postgres applies them once against an empty volume on first boot. Re-seed by deleting the Railway volume (or, locally, by dropping the compose volume).
 
 ---
 
@@ -664,24 +668,34 @@ Features people ask about that aren't built yet:
 
 Local dev: `docker compose up --build -d` is the only blessed path.
 
-Production target: a single Oracle Cloud Always Free VM
-(`VM.Standard.A1.Flex`, ARM Ampere, 4 OCPU / 24 GB) running the same
-compose stack. Front door is Cloudflare:
+Production target: **Railway (Hobby) + Cloudflare**. Every backend and every
+data store runs as a Railway service in two environments (`dev`, `prod`).
+The FrontEnd ships to a Cloudflare Worker that doubles as the single-origin
+gateway (it serves the Vite SPA *and* reverse-proxies API paths to Railway
+backends — same routing rules as `FrontEnd/nginx.conf:41-87`).
 
-- **Cloudflare Pages** hosts the FrontEnd Vite build. Set the four
-  `VITE_*` URLs as Pages env vars at build time.
-- **Cloudflare Tunnel** (`cloudflared`) runs as a systemd unit on the VM
-  and exposes the backend ports (`8080`, `8000`, `8082`, `8089`, `8091`,
-  `3100`) over Cloudflare's edge — no inbound firewall rules needed on
-  the VM.
-- Hosted state stays on Supabase (Postgres) and Atlas (Mongo for
-  conversation-chat sessions). `hospital-postgres`, `email-mongo`,
-  `redis`, and `rabbitmq` run as containers on the VM (cheap, simple,
-  and keeps the audit log + KPI bucket inside one host).
+- **Cloudflare Worker** (`cloudflare-worker/`) — apex `<apex>` → prod env,
+  `dev.<apex>` → dev env. TLS is provisioned by Cloudflare; bindings live in
+  `wrangler.toml`. The Worker has no nginx; routing is in `src/index.ts`.
+- **Railway** hosts 8 application services + 6 self-hosted data stores
+  (Redis, hospital-postgres, email-mongo, RabbitMQ, tenant-postgres,
+  conversation-mongo). The data stores have Railway volumes and replace
+  the previous Supabase + Atlas dependencies entirely.
+- **Single source of truth** for config: `.env.dev` / `.env.prod` in the
+  umbrella (gitignored). The bootstrap uploads them as Railway shared
+  variables; services reference keys via `${{ shared.KEY }}`.
+- **CI/CD:** `.github/workflows/{deploy-dev,deploy-prod,pr-gate}.yml`.
+  Push to `dev` → deploy dev. PR `dev → main` only (enforced by
+  `pr-gate.yml`); prod won't deploy unless the same SHA has a green
+  deploy-dev run.
 
-Do **not** try to deploy this stack to Cloudflare Workers. The Rust /
-Go / Java / Python services are long-running binaries with persistent
-TCP connections (AMQP, Mongo) that the Workers runtime cannot host.
+First-time setup is one command: `scripts/bootstrap.sh`. The companion doc
+`scripts/bootstrap.md` lists the three human checklists (env files, GitHub
+secrets, Cloudflare zone). After that, every change ships via `git push`.
+
+The earlier Oracle Cloud + Cloudflare Pages plan is retired — Railway
+Hobby covers the resources comfortably and removes the OCI / cloudflared
+moving parts.
 
 ---
 

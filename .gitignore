@@ -2,6 +2,16 @@
 .env
 .env.local
 *.env.local
+.env.dev
+.env.prod
+
+# Cloudflare Worker — generated artifacts + local secrets
+cloudflare-worker/wrangler.toml
+cloudflare-worker/.dev.vars
+cloudflare-worker/node_modules/
+cloudflare-worker/dist/
+cloudflare-worker/.wrangler/
+cloudflare-worker/worker-configuration.d.ts
 
 # Editor noise
 .vscode/

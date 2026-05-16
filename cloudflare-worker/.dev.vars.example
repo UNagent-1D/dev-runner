@@ -1,0 +1,9 @@
+# Copy to `.dev.vars` (gitignored) for local `wrangler dev` runs.
+# These point the locally-running Worker at the deployed Railway dev backends
+# so you can test the proxy logic against real services without spinning up
+# the whole compose stack.
+
+BACKEND_ORCH=https://chat-orch-dev.up.railway.app
+BACKEND_TENANT=https://tenant-dev.up.railway.app
+BACKEND_CHAT=https://conversation-chat-dev.up.railway.app
+BACKEND_COMPLIANCE=https://compliance-dev.up.railway.app

@@ -13,9 +13,29 @@ working stack.
   `p1_1D.pdf` for MiCampus delivery.
 - **[AGENTS.md](AGENTS.md)** — full agent/developer playbook for the
   platform: per-service cheat sheets, common tasks, and gotchas.
+- **[scripts/bootstrap.md](scripts/bootstrap.md)** — first-time deploy
+  to Railway (backends + self-hosted data stores) and Cloudflare (Worker
+  + custom domain). One command, three human checklists.
 - Brand assets (`Un Agent — Asesores en Salud`) live under
   [`LogosUNagent/`](LogosUNagent/); the horizontal lockup used in the
   P1 writeup is at [`docs/logo.png`](docs/logo.png).
+
+## Deploying
+
+Production target: Railway (Hobby) + Cloudflare. Each microservice is its
+own Railway service; all stateful pieces (Redis, RabbitMQ, two Postgres
+instances, two Mongo instances) are self-hosted on Railway with volumes —
+no external SaaS for data. The FrontEnd ships to a Cloudflare Worker that
+also reverse-proxies API paths to backends, so the browser sees one origin.
+
+```bash
+scripts/bootstrap.sh        # one-shot: Railway project + envs + Cloudflare Worker + custom domain
+```
+
+After that, push to `dev` or `main` triggers the matching environment via
+GitHub Actions; `main` is gated on a green dev deploy of the same SHA. See
+[scripts/bootstrap.md](scripts/bootstrap.md) for the three checklists you
+fill in once.
 
 ## What's inside
 

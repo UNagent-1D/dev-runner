@@ -1,0 +1,47 @@
+# Cloudflare Worker — UNAgent gateway.
+#
+# This is the BOOTSTRAP TEMPLATE. The bootstrap script (scripts/bootstrap.sh)
+# substitutes the {{PLACEHOLDERS}} below with values from your .env files +
+# the Railway service hostnames it captures, then writes the result to
+# `wrangler.toml` (gitignored).
+#
+# If you ever need to edit `wrangler.toml` by hand, mirror the change into
+# THIS file so re-running the bootstrap doesn't blow it away.
+
+name = "unagent-gateway"
+main = "src/index.ts"
+compatibility_date = "2026-01-15"
+workers_dev = false
+
+# Static SPA assets — Vite build output is mounted into the Worker so the
+# same wrangler deploy uploads code AND assets in one shot.
+[assets]
+directory = "../FrontEnd/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+# ---------------------------------------------------------------------------
+# dev — bound to dev.<apex>. Worker proxies to Railway dev backends.
+# ---------------------------------------------------------------------------
+[env.dev]
+name = "unagent-gateway-dev"
+routes = [{ pattern = "dev.{{APEX}}", custom_domain = true }]
+
+[env.dev.vars]
+BACKEND_ORCH       = "{{BACKEND_ORCH_DEV}}"
+BACKEND_TENANT     = "{{BACKEND_TENANT_DEV}}"
+BACKEND_CHAT       = "{{BACKEND_CHAT_DEV}}"
+BACKEND_COMPLIANCE = "{{BACKEND_COMPLIANCE_DEV}}"
+
+# ---------------------------------------------------------------------------
+# prod — bound to <apex>. Worker proxies to Railway prod backends.
+# ---------------------------------------------------------------------------
+[env.prod]
+name = "unagent-gateway-prod"
+routes = [{ pattern = "{{APEX}}", custom_domain = true }]
+
+[env.prod.vars]
+BACKEND_ORCH       = "{{BACKEND_ORCH_PROD}}"
+BACKEND_TENANT     = "{{BACKEND_TENANT_PROD}}"
+BACKEND_CHAT       = "{{BACKEND_CHAT_PROD}}"
+BACKEND_COMPLIANCE = "{{BACKEND_COMPLIANCE_PROD}}"
