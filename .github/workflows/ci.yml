@@ -140,11 +140,8 @@ jobs:
           cache-dependency-path: cloudflare-worker/package-lock.json
 
       - name: Install + typecheck
-        # `npm install` (not `npm ci`) because we don't ship a lockfile in
-        # the umbrella scaffold. CI will create one on first commit; flip to
-        # `npm ci` once package-lock.json is committed.
         run: |
-          npm install
+          npm ci
           npx wrangler types 2>/dev/null || true
           npx tsc --noEmit
 
@@ -163,12 +160,19 @@ jobs:
           token: ${{ secrets.SUBMODULES_TOKEN }}
           fetch-depth: 1
 
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: pnpm
+          cache-dependency-path: FrontEnd/pnpm-lock.yaml
 
       - name: Install + build
         run: |
-          if [ -f package-lock.json ]; then npm ci; else npm install; fi
-          npm run build
+          pnpm install --frozen-lockfile
+          pnpm run build

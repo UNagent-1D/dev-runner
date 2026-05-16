@@ -28,10 +28,10 @@ name = "unagent-gateway-dev"
 routes = [{ pattern = "dev.unagent.site", custom_domain = true }]
 
 [env.dev.vars]
-BACKEND_ORCH       = "{{BACKEND_ORCH_DEV}}"
-BACKEND_TENANT     = "{{BACKEND_TENANT_DEV}}"
-BACKEND_CHAT       = "{{BACKEND_CHAT_DEV}}"
-BACKEND_COMPLIANCE = "{{BACKEND_COMPLIANCE_DEV}}"
+BACKEND_ORCH       = "https://chat-orch-dev.up.railway.app"
+BACKEND_TENANT     = "https://tenant-dev-07ad.up.railway.app"
+BACKEND_CHAT       = "https://conversation-chat-dev.up.railway.app"
+BACKEND_COMPLIANCE = "https://compliance-dev-8757.up.railway.app"
 
 # ---------------------------------------------------------------------------
 # prod — bound to <apex>. Worker proxies to Railway prod backends.
@@ -41,7 +41,7 @@ name = "unagent-gateway-prod"
 routes = [{ pattern = "unagent.site", custom_domain = true }]
 
 [env.prod.vars]
-BACKEND_ORCH       = "{{BACKEND_ORCH_PROD}}"
-BACKEND_TENANT     = "{{BACKEND_TENANT_PROD}}"
-BACKEND_CHAT       = "{{BACKEND_CHAT_PROD}}"
-BACKEND_COMPLIANCE = "{{BACKEND_COMPLIANCE_PROD}}"
+BACKEND_ORCH       = "https://chat-orch-production-29b4.up.railway.app"
+BACKEND_TENANT     = "https://tenant-production-2017.up.railway.app"
+BACKEND_CHAT       = "https://conversation-chat-production-e5aa.up.railway.app"
+BACKEND_COMPLIANCE = "https://compliance-production-7465.up.railway.app"

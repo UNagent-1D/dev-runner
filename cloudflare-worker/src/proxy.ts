@@ -34,17 +34,30 @@ function buildUpstreamHeaders(req: Request): Headers {
   return headers;
 }
 
-export async function proxy(req: Request, backend: string): Promise<Response> {
-  const upstream = await fetch(buildUpstreamUrl(req, backend), {
+// Build the RequestInit for the upstream fetch. GET / HEAD have no body.
+// For POST/PUT/PATCH/DELETE we BUFFER the body (req.arrayBuffer) instead
+// of forwarding the ReadableStream — Workers' fetch() doesn't accept the
+// `duplex` flag the way the standard Fetch API does, and forwarding a
+// stream without it produces "TypeError: When constructing a Request with
+// a streaming body, you must set `duplex: 'half'`". Our request bodies
+// are small JSON; the buffering cost is negligible.
+async function buildUpstreamInit(req: Request): Promise<RequestInit> {
+  const init: RequestInit = {
     method: req.method,
     headers: buildUpstreamHeaders(req),
-    body:
-      req.method === "GET" || req.method === "HEAD" ? undefined : req.body,
-    // Critical: streaming request bodies (e.g. large uploads) need this flag.
-    // @ts-expect-error — Workers runtime accepts it; TS types lag.
-    duplex: "half",
     redirect: "manual",
-  });
+  };
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    init.body = await req.arrayBuffer();
+  }
+  return init;
+}
+
+export async function proxy(req: Request, backend: string): Promise<Response> {
+  const upstream = await fetch(
+    buildUpstreamUrl(req, backend),
+    await buildUpstreamInit(req),
+  );
 
   // Pass the body through unchanged (streamed for SSE, single chunk otherwise).
   // Filter hop-by-hop response headers so the Worker doesn't double-set them.
@@ -65,15 +78,10 @@ export async function proxy(req: Request, backend: string): Promise<Response> {
 // don't buffer by default, but it's worth being defensive — the failure
 // mode is silent (clients receive nothing until the upstream finishes).
 export async function proxySse(req: Request, backend: string): Promise<Response> {
-  const upstream = await fetch(buildUpstreamUrl(req, backend), {
-    method: req.method,
-    headers: buildUpstreamHeaders(req),
-    body:
-      req.method === "GET" || req.method === "HEAD" ? undefined : req.body,
-    // @ts-expect-error — see proxy() above.
-    duplex: "half",
-    redirect: "manual",
-  });
+  const upstream = await fetch(
+    buildUpstreamUrl(req, backend),
+    await buildUpstreamInit(req),
+  );
 
   const responseHeaders = new Headers();
   upstream.headers.forEach((value, key) => {
