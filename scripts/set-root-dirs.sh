@@ -23,7 +23,7 @@ command -v curl >/dev/null || err "install curl"
 
 PROJECT_ID="3d5be088-15a5-4763-8bf1-6332dfd44fd9"
 ENV_ID="71057f1f-ca5c-40e8-9ad2-abbdad2237ac"
-ENDPOINT="https://backboard.railway.com/graphql/v2"
+ENDPOINT="${RAILWAY_GRAPHQL_ENDPOINT:-https://backboard.railway.app/graphql/v2}"
 
 gql() {
   local query="$1"
