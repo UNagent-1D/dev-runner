@@ -119,12 +119,16 @@ jobs:
 
       - name: Probe Railway public backends directly
         run: |
-          for url in \
-            "${{ vars.RAILWAY_DEV_ORCH_URL }}/health" \
-            "${{ vars.RAILWAY_DEV_TENANT_URL }}/health" \
-            "${{ vars.RAILWAY_DEV_CHAT_URL }}/health" \
-            "${{ vars.RAILWAY_DEV_COMPLIANCE_URL }}/health"; do
-            [ -z "$url" ] && continue
+          # Each backend exposes a different health path. conversation-chat
+          # (Go/Gin) only answers under /api/v1/health; the others expose /health.
+          for entry in \
+            "${{ vars.RAILWAY_DEV_ORCH_URL }}|/health" \
+            "${{ vars.RAILWAY_DEV_TENANT_URL }}|/health" \
+            "${{ vars.RAILWAY_DEV_CHAT_URL }}|/api/v1/health" \
+            "${{ vars.RAILWAY_DEV_COMPLIANCE_URL }}|/health"; do
+            base="${entry%%|*}"; path="${entry##*|}"
+            [ -z "$base" ] && continue
+            url="${base}${path}"
             echo "→ $url"
             curl --fail --retry 30 --retry-delay 10 --retry-all-errors -sS \
                  -o /dev/null -w "  %{http_code}\n" "$url"
