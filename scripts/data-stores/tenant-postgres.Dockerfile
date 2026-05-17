@@ -8,3 +8,4 @@
 FROM postgres:16-alpine
 
 COPY Tenant/sql/init_schema.sql /docker-entrypoint-initdb.d/01_init_schema.sql
+COPY scripts/data-stores/tenant-seed.sql /docker-entrypoint-initdb.d/02_seed_demo.sql
