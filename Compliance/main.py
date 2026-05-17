@@ -86,7 +86,16 @@ class SecureChannelMiddleware(BaseHTTPMiddleware):
             )
 
         # Swap the request body so downstream handlers / FastAPI body parsing
-        # operate on plaintext.
+        # operate on plaintext. Three places need updating:
+        #   (1) request._body  — Starlette caches the result of `await body()`
+        #       which we just consumed reading the envelope; without overwriting
+        #       it, FastAPI / Pydantic will see the envelope, not the plaintext.
+        #   (2) request._receive — the ASGI receive callable, used by handlers
+        #       that read the stream directly.
+        #   (3) scope["headers"] — content-type + length must reflect plaintext
+        #       so Pydantic doesn't reject on MIME mismatch.
+        request._body = plain  # type: ignore[attr-defined]
+
         async def _replay():
             return {"type": "http.request", "body": plain, "more_body": False}
         request._receive = _replay  # type: ignore[attr-defined]
