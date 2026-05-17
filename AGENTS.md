@@ -30,6 +30,13 @@ only ever talks to `http://localhost:3000`. Backends still expose host
 ports (8000/8080/8082/8091/...) so devs can `curl` them directly — the
 proxy is additive.
 
+**Secure Channel.** Every solid arrow between two backend services in
+the diagram below is wrapped in an AES-256-GCM envelope when
+`BACKEND_CHANNEL_ENABLED=true` — both directions, HTTP and RabbitMQ.
+The Frontend stays outside this channel (Cloudflare TLS covers
+browser↔backend; the browser cannot hold the shared key). See §5 for
+the env vars and §6.x for the per-service touch points.
+
 ```
            ┌──────────────────────────── frontend  nginx  (SPA + reverse proxy)
            │                                │  :3000  ── /v1/*       → chat-orch
@@ -161,6 +168,8 @@ Optional:
 
 | Var | Default | Role |
 |---|---|---|
+| `BACKEND_CHANNEL_KEY` | unset | Base64 of 32 random bytes (`openssl rand -base64 32`). Shared across every backend service for app-layer AES-256-GCM encryption of inter-service HTTP bodies + RabbitMQ payloads. Required iff `BACKEND_CHANNEL_ENABLED=true`. |
+| `BACKEND_CHANNEL_ENABLED` | `false` | Kill switch for the Secure Channel. When `true`, every backend-to-backend hop seals + verifies the wire envelope. When `false`, traffic stays plaintext but the middleware accepts either shape for graceful rollout. |
 | `TELEGRAM_BOT_TOKEN` | unset | Enables Telegram ingress (BotFather) |
 | `TELEGRAM_DEFAULT_TENANT_ID` | `demo-tenant` | Compliance/metrics bucket for Telegram traffic |
 | `MONGO_URI_COMPLIANCE` | `mongodb://email-mongo:27017` | Compliance — where the audit collection is written. Override to use Atlas or another host. |
@@ -601,6 +610,9 @@ Init scripts for `tenant-postgres` and `hospital-postgres` are baked into custom
 
 | Symptom | Likely cause |
 |---|---|
+| Service logs `secure_channel_decrypt_failed` or `AEAD verification failed` on every request | `BACKEND_CHANNEL_KEY` differs between the caller and the callee. Both ends must hold the *exact* same base64 string. Regenerate once with `openssl rand -base64 32` and redeploy every participating service. |
+| Service logs `BACKEND_CHANNEL_ENABLED=true but BACKEND_CHANNEL_KEY is empty` on startup | Either flip `BACKEND_CHANNEL_ENABLED=false` for now, or populate `BACKEND_CHANNEL_KEY` in `.env` / Railway shared vars before redeploying. |
+| All inter-service calls return 400 after toggling the flag | Rolling cut-over: one side has `ENABLED=true`, the other `false`. Flip both, or set both to `false` and roll again. |
 | `tenant` exits with `network is unreachable: 2600:…:5432` | `DATABASE_URL` points at Supabase **direct** URL (IPv6-only on free tier). Switch to the **Session Pooler** URI. |
 | Browser login says "Invalid credentials" but `curl POST /auth/login` works | CORS preflight failing. Verify `Tenant/router.go::corsMiddleware` is in place and Tenant was rebuilt after changes. |
 | `/api/admin/tenants` white-screens the page | Tenant returning `{message:"..."}` instead of an array. Check `listTenantsHandler` is wired. |

@@ -1,3 +1,4 @@
+import json
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -5,11 +6,16 @@ from typing import Any, Dict, List, Optional
 
 import motor.motor_asyncio
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
+
+import channel as secure_channel
 
 load_dotenv()
+secure_channel.init_from_env()
 
 MONGO_URI = os.getenv("MONGO_URI") or os.getenv("MONGO_URL")
 MONGO_DB = os.getenv("MONGO_DB_COMPLIANCE", "UN_compliance_db")
@@ -43,6 +49,84 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["*"],
 )
+
+
+# ---------------------------------------------------------------------------
+# Secure-channel middleware
+# ---------------------------------------------------------------------------
+# Header-driven so that the same FastAPI app can serve BOTH the browser-fronted
+# /stats/* endpoints (plaintext, no shared key) AND the chat-orch-fronted
+# /conversation/chat + /feedback/csat endpoints (encrypted end to end).
+#
+# When the inbound request carries Content-Type: application/vnd.unagent.secure+json
+# we decrypt the body before handlers see it, mark the request, and re-seal
+# the response on the way out. Requests without that header pass through.
+
+class SecureChannelMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path == "/health":
+            return await call_next(request)
+        ct = (request.headers.get("content-type") or "").lower()
+        is_envelope = ct.startswith(secure_channel.CONTENT_TYPE)
+        if not is_envelope:
+            return await call_next(request)
+
+        raw = await request.body()
+        try:
+            envelope = json.loads(raw.decode("utf-8"))
+            plain = secure_channel.open_envelope(envelope)
+        except (json.JSONDecodeError, secure_channel.ChannelError) as e:
+            return Response(
+                content=json.dumps({
+                    "error": "secure_channel_decrypt_failed",
+                    "detail": str(e),
+                }),
+                status_code=400,
+                media_type="application/json",
+            )
+
+        # Swap the request body so downstream handlers / FastAPI body parsing
+        # operate on plaintext.
+        async def _replay():
+            return {"type": "http.request", "body": plain, "more_body": False}
+        request._receive = _replay  # type: ignore[attr-defined]
+        request.scope["headers"] = [
+            (k, v) for k, v in request.scope["headers"]
+            if k.lower() not in (b"content-type", b"content-length")
+        ] + [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(plain)).encode("ascii")),
+        ]
+
+        response = await call_next(request)
+
+        body_chunks: list[bytes] = []
+        async for chunk in response.body_iterator:
+            body_chunks.append(chunk if isinstance(chunk, bytes) else chunk.encode("utf-8"))
+        plain_body = b"".join(body_chunks)
+
+        try:
+            sealed_body, sealed_ct, _ = secure_channel.seal_json(
+                json.loads(plain_body) if plain_body else {}
+            )
+        except json.JSONDecodeError:
+            # Non-JSON response (shouldn't happen for current routes) — fall
+            # back to passing it through. The handshake is broken, but the
+            # caller still gets a usable status code.
+            return Response(content=plain_body, status_code=response.status_code)
+
+        headers = dict(response.headers)
+        headers["content-type"] = sealed_ct
+        headers["content-length"] = str(len(sealed_body))
+        headers[secure_channel.HEADER_NAME] = secure_channel.HEADER_VALUE
+        return Response(
+            content=sealed_body,
+            status_code=response.status_code,
+            headers=headers,
+        )
+
+
+app.add_middleware(SecureChannelMiddleware)
 
 
 class TenantStats:

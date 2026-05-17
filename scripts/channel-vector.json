@@ -1,0 +1,16 @@
+{
+  "alg": "AES-256-GCM",
+  "notes": "Fixed AES-256-GCM test vector used by every service unit test to prove cross-language interop on the secure-channel wire format (envelope below). Regenerate with: node scripts/channel-vector.js",
+  "key_b64": "ASNFZ4mrze8BI0VniavN7wEjRWeJq83vASNFZ4mrze8=",
+  "iv_b64": "CgsMDQ4PEBESExQV",
+  "aad_b64": "",
+  "plaintext_b64": "eyJoZWxsbyI6IndvcmxkIiwidGVuYW50IjoiZGVtbyIsIm4iOjQyfQ==",
+  "ciphertext_b64": "HA/jiyD9Ct203QHgmTq3vFe0VYYm5ynGin9Xn7B3QVGAZkDXaJLrEQ==",
+  "tag_b64": "XjADTXgk4M//4jqs0Cu05g==",
+  "envelope": {
+    "v": 1,
+    "iv": "CgsMDQ4PEBESExQV",
+    "ct": "HA/jiyD9Ct203QHgmTq3vFe0VYYm5ynGin9Xn7B3QVGAZkDXaJLrEQ==",
+    "tag": "XjADTXgk4M//4jqs0Cu05g=="
+  }
+}

@@ -105,6 +105,8 @@ services:
     container_name: archsoft-hospital-mock
     environment:
       DATABASE_URL: postgresql://${HOSPITAL_DB_USER:-hospital}:${HOSPITAL_DB_PASSWORD:-hospital}@hospital-postgres:5432/${HOSPITAL_DB_NAME:-hospital}
+      BACKEND_CHANNEL_KEY: ${BACKEND_CHANNEL_KEY:-}
+      BACKEND_CHANNEL_ENABLED: ${BACKEND_CHANNEL_ENABLED:-false}
     ports:
       - "8092:8080"
     depends_on:
@@ -135,6 +137,8 @@ services:
       AUTH_STUB_EMAIL: "internal@platform.local"
       DEFAULT_IDLE_TIMEOUT_SECONDS: "300"
       RABBITMQ_URL: "amqp://rabbitmq:5672"
+      BACKEND_CHANNEL_KEY: ${BACKEND_CHANNEL_KEY:-}
+      BACKEND_CHANNEL_ENABLED: ${BACKEND_CHANNEL_ENABLED:-false}
     ports:
       - "8082:8082"
     depends_on:
@@ -158,6 +162,8 @@ services:
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
       OPENAI_DEFAULT_MODEL: ${OPENAI_DEFAULT_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
       RABBITMQ_URL: "amqp://rabbitmq:5672"
+      BACKEND_CHANNEL_KEY: ${BACKEND_CHANNEL_KEY:-}
+      BACKEND_CHANNEL_ENABLED: ${BACKEND_CHANNEL_ENABLED:-false}
     ports:
       - "3100:3100"
     depends_on:
@@ -195,6 +201,8 @@ services:
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
       OPENAI_DEFAULT_MODEL: ${OPENAI_DEFAULT_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
       AGENT_RUNTIME_URL: "http://agent-runtime:3100"
+      BACKEND_CHANNEL_KEY: ${BACKEND_CHANNEL_KEY:-}
+      BACKEND_CHANNEL_ENABLED: ${BACKEND_CHANNEL_ENABLED:-false}
       RUST_LOG: "chat_orch=info,tower_http=info"
       LOG_FORMAT: "json"
     ports:
@@ -251,6 +259,8 @@ services:
     environment:
       MONGO_URI: ${MONGO_URI_COMPLIANCE:-mongodb://email-mongo:27017}
       MONGO_DB_COMPLIANCE: ${MONGO_DB_COMPLIANCE:-UN_compliance_db}
+      BACKEND_CHANNEL_KEY: ${BACKEND_CHANNEL_KEY:-}
+      BACKEND_CHANNEL_ENABLED: ${BACKEND_CHANNEL_ENABLED:-false}
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8091/health', timeout=2).status == 200 else 1)\""]
       interval: 10s
@@ -282,6 +292,8 @@ services:
       AUTH_STUB_USER_ID: "00000000-0000-0000-0000-000000000001"
       AUTH_STUB_ROLE: "app_admin"
       AUTH_STUB_EMAIL: "internal@platform.local"
+      BACKEND_CHANNEL_KEY: ${BACKEND_CHANNEL_KEY:-}
+      BACKEND_CHANNEL_ENABLED: ${BACKEND_CHANNEL_ENABLED:-false}
       LOG_FORMAT: "json"
     ports:
       - "8089:8080"
