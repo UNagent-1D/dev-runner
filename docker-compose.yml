@@ -88,6 +88,9 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       JWT_SECRET: ${JWT_SECRET}
       GIN_MODE: release
+      COMPLIANCE_URL: "http://compliance:8091"
+      AUTH_RATE_LIMIT_BURST: ${AUTH_RATE_LIMIT_BURST:-5}
+      AUTH_RATE_LIMIT_PER_SEC: ${AUTH_RATE_LIMIT_PER_SEC:-0.0333}
     ports:
       - "8080:8080"
     healthcheck:
@@ -203,6 +206,10 @@ services:
       AGENT_RUNTIME_URL: "http://agent-runtime:3100"
       BACKEND_CHANNEL_KEY: ${BACKEND_CHANNEL_KEY:-}
       BACKEND_CHANNEL_ENABLED: ${BACKEND_CHANNEL_ENABLED:-false}
+      RATE_LIMIT_CHAT_BURST: ${RATE_LIMIT_CHAT_BURST:-20}
+      RATE_LIMIT_CHAT_PER_SEC: ${RATE_LIMIT_CHAT_PER_SEC:-1.0}
+      RATE_LIMIT_FEEDBACK_BURST: ${RATE_LIMIT_FEEDBACK_BURST:-10}
+      RATE_LIMIT_FEEDBACK_PER_SEC: ${RATE_LIMIT_FEEDBACK_PER_SEC:-0.5}
       RUST_LOG: "chat_orch=info,tower_http=info"
       LOG_FORMAT: "json"
     ports:
