@@ -39,6 +39,33 @@ services:
     networks:
       - archsoft
 
+  # ---------------------------------------------------------------------------
+  # Local Postgres for the Tenant service. Mirrors the Railway `tenant-postgres`
+  # build at scripts/data-stores/tenant-postgres.Dockerfile: applies
+  # Tenant/sql/init_schema.sql and scripts/data-stores/tenant-seed.sql exactly
+  # once against an empty volume. Drop the volume to re-seed.
+  # ---------------------------------------------------------------------------
+  tenant-postgres:
+    image: postgres:16-alpine
+    container_name: archsoft-tenant-postgres
+    environment:
+      POSTGRES_DB: ${TENANT_DB_NAME:-tenant}
+      POSTGRES_USER: ${TENANT_DB_USER:-tenant}
+      POSTGRES_PASSWORD: ${TENANT_DB_PASSWORD:-tenant}
+    expose:
+      - "5432"
+    volumes:
+      - tenant-postgres-data:/var/lib/postgresql/data
+      - ./Tenant/sql/init_schema.sql:/docker-entrypoint-initdb.d/01_init_schema.sql:ro
+      - ./scripts/data-stores/tenant-seed.sql:/docker-entrypoint-initdb.d/02_seed_demo.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TENANT_DB_USER:-tenant} -d ${TENANT_DB_NAME:-tenant}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - archsoft
+
   # Local Mongo dedicated to the email audit service. conversation-chat
   # still talks to hosted Atlas via MONGO_URI; this one is intentionally
   # in-cluster so the audit trail stays self-contained for the demo.
@@ -85,11 +112,20 @@ services:
       context: ./Tenant
     container_name: archsoft-tenant
     environment:
-      DATABASE_URL: ${DATABASE_URL}
+      # DATABASE_URL defaults to the local tenant-postgres container so a
+      # fresh `docker compose up` works without secrets. Override in .env
+      # to point at Supabase or a managed Postgres.
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${TENANT_DB_USER:-tenant}:${TENANT_DB_PASSWORD:-tenant}@tenant-postgres:5432/${TENANT_DB_NAME:-tenant}?sslmode=disable}
       JWT_SECRET: ${JWT_SECRET}
       GIN_MODE: release
+      COMPLIANCE_URL: "http://compliance:8091"
+      AUTH_RATE_LIMIT_BURST: ${AUTH_RATE_LIMIT_BURST:-5}
+      AUTH_RATE_LIMIT_PER_SEC: ${AUTH_RATE_LIMIT_PER_SEC:-0.0333}
     ports:
       - "8080:8080"
+    depends_on:
+      tenant-postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
       interval: 15s
@@ -203,6 +239,10 @@ services:
       AGENT_RUNTIME_URL: "http://agent-runtime:3100"
       BACKEND_CHANNEL_KEY: ${BACKEND_CHANNEL_KEY:-}
       BACKEND_CHANNEL_ENABLED: ${BACKEND_CHANNEL_ENABLED:-false}
+      RATE_LIMIT_CHAT_BURST: ${RATE_LIMIT_CHAT_BURST:-20}
+      RATE_LIMIT_CHAT_PER_SEC: ${RATE_LIMIT_CHAT_PER_SEC:-1.0}
+      RATE_LIMIT_FEEDBACK_BURST: ${RATE_LIMIT_FEEDBACK_BURST:-10}
+      RATE_LIMIT_FEEDBACK_PER_SEC: ${RATE_LIMIT_FEEDBACK_PER_SEC:-0.5}
       RUST_LOG: "chat_orch=info,tower_http=info"
       LOG_FORMAT: "json"
     ports:
@@ -343,4 +383,5 @@ networks:
 volumes:
   email-mongo-data:
   hospital-postgres-data:
+  tenant-postgres-data:
   grafana-data:
