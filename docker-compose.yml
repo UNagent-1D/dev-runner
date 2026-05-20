@@ -82,7 +82,7 @@ services:
         condition: service_healthy
     restart: on-failure
     networks:
-      - archsoft
+      - net-db
 
   # Local Mongo dedicated to the email audit service. conversation-chat
   # still talks to hosted Atlas via MONGO_URI; this one is intentionally
@@ -208,7 +208,8 @@ services:
       conversation-mongo:
         condition: service_healthy
     networks:
-      - archsoft
+      - net-orchestrator
+      - net-db
 
   # Local MongoDB for conversation-chat sessions + history. Replaces the
   # Atlas dependency for local testing (same role as conversation-mongo
