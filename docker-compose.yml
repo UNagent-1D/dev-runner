@@ -13,7 +13,7 @@ services:
       timeout: 3s
       retries: 5
     networks:
-      - archsoft
+      - net-db
 
   # Local Postgres backing Hospital-MP. Schema + seed are applied on first
   # boot via /docker-entrypoint-initdb.d (Postgres convention). Subsequent
@@ -37,7 +37,52 @@ services:
       timeout: 5s
       retries: 10
     networks:
-      - archsoft
+      - net-db
+
+  # ---------------------------------------------------------------------------
+  # Local Postgres for the Tenant service. Mirrors the Railway `tenant-postgres`
+  # build at scripts/data-stores/tenant-postgres.Dockerfile: applies
+  # Tenant/sql/init_schema.sql and scripts/data-stores/tenant-seed.sql exactly
+  # once against an empty volume. Drop the volume to re-seed.
+  # ---------------------------------------------------------------------------
+  tenant-postgres:
+    image: postgres:16-alpine
+    container_name: archsoft-tenant-postgres
+    environment:
+      POSTGRES_DB: ${TENANT_DB_NAME:-tenant}
+      POSTGRES_USER: ${TENANT_DB_USER:-tenant}
+      POSTGRES_PASSWORD: ${TENANT_DB_PASSWORD:-tenant}
+    expose:
+      - "5432"
+    volumes:
+      # Schema is applied by the tenant-migrate service (golang-migrate);
+      # Tenant main uses migrations, not a baked init script.
+      - tenant-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TENANT_DB_USER:-tenant} -d ${TENANT_DB_NAME:-tenant}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - net-db
+
+  # One-shot: applies Tenant's global schema migrations to tenant-postgres
+  # before the tenant service starts. Exits 0 when done.
+  tenant-migrate:
+    image: migrate/migrate:v4.18.1
+    container_name: archsoft-tenant-migrate
+    volumes:
+      - ./Tenant/migrations/global:/migrations:ro
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://${TENANT_DB_USER:-tenant}:${TENANT_DB_PASSWORD:-tenant}@tenant-postgres:5432/${TENANT_DB_NAME:-tenant}?sslmode=disable"
+      - "up"
+    depends_on:
+      tenant-postgres:
+        condition: service_healthy
+    restart: on-failure
+    networks:
+      - net-db
 
   # Local Postgres backing Tenant. Global schema applied on first boot via
   # Tenant/migrations/global/*.up.sql files mounted into /docker-entrypoint-initdb.d
@@ -100,7 +145,7 @@ services:
       retries: 5
       start_period: 15s
     networks:
-      - archsoft
+      - net-db
 
   # Message broker — RabbitMQ with management UI.
   # Built from UN_message_broker_mb which pre-declares chat_requests +
@@ -119,7 +164,7 @@ services:
       retries: 5
       start_period: 30s
     networks:
-      - archsoft
+      - net-db
 
   # ---------------------------------------------------------------------------
   # Application services
@@ -129,29 +174,31 @@ services:
       context: ./Tenant
     container_name: archsoft-tenant
     environment:
-      # Local Postgres (tenant-postgres container) by default. Override via .env
-      # if you want to point at a hosted Postgres (e.g. Supabase) instead.
-      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:admin@tenant-postgres:5432/postgres?sslmode=disable}
+      # DATABASE_URL defaults to the local tenant-postgres container so a
+      # fresh `docker compose up` works without secrets. Override in .env
+      # to point at Supabase or a managed Postgres.
+      DATABASE_URL: ${DATABASE_URL:-postgres://${TENANT_DB_USER:-tenant}:${TENANT_DB_PASSWORD:-tenant}@tenant-postgres:5432/${TENANT_DB_NAME:-tenant}?sslmode=disable}
       JWT_SECRET: ${JWT_SECRET}
       INTERNAL_API_KEY: ${INTERNAL_API_KEY}
       GIN_MODE: release
-      # Force Go's pure DNS resolver so resolv.conf is read correctly inside
-      # the container. Without this, the cgo resolver hides actual errors
-      # behind misleading "network is unreachable" messages.
-      GODEBUG: netdns=go
+      # Shared secret with the orchestrator for /api/v1/internal/* calls.
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
     ports:
       - "8080:8080"
     depends_on:
       tenant-postgres:
         condition: service_healthy
+      tenant-migrate:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/api/v1/health"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/v1/health"]
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 20s
     networks:
-      - archsoft
+      - net-tenant
+      - net-db
 
   # User-Auth — OTP-via-email microservice in front of Tenant's user CRUD.
   # FrontEnd /signup + Telegram pre-registration call it for code generation
@@ -217,7 +264,8 @@ services:
       hospital-postgres:
         condition: service_healthy
     networks:
-      - archsoft
+      - net-orchestrator
+      - net-db
 
   conversation-chat:
     build:
@@ -228,8 +276,6 @@ services:
       APP_VERSION: "1.0.0"
       GIN_MODE: release
       REDIS_URL: "redis://redis:6379/1"
-      # Local Mongo (conversation-mongo container) by default; override via .env
-      # for hosted Atlas.
       MONGO_URI: ${MONGO_URI:-mongodb://conversation-mongo:27017}
       MONGO_DB: ${MONGO_DB:-conversatory}
       ACR_SERVICE_URL: "http://agent-runtime:3100"
@@ -256,8 +302,32 @@ services:
         condition: service_started
       rabbitmq:
         condition: service_healthy
+      conversation-mongo:
+        condition: service_healthy
     networks:
-      - archsoft
+      - net-orchestrator
+      - net-db
+
+  # Local MongoDB for conversation-chat sessions + history. Replaces the
+  # Atlas dependency for local testing (same role as conversation-mongo
+  # on Railway). Drop the conversation-mongo-data volume to re-seed.
+  conversation-mongo:
+    image: mongo:7
+    container_name: archsoft-conversation-mongo
+    expose:
+      - "27017"
+    volumes:
+      - conversation-mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - net-orchestrator
+      - net-db
+      - net-tenant
 
   agent-runtime:
     build:
@@ -280,7 +350,8 @@ services:
       rabbitmq:
         condition: service_healthy
     networks:
-      - archsoft
+      - net-orchestrator
+      - net-db
 
   chat-orch:
     build:
@@ -316,6 +387,10 @@ services:
       AGENT_RUNTIME_URL: "http://agent-runtime:3100"
       BACKEND_CHANNEL_KEY: ${BACKEND_CHANNEL_KEY:-}
       BACKEND_CHANNEL_ENABLED: ${BACKEND_CHANNEL_ENABLED:-false}
+      RATE_LIMIT_CHAT_BURST: ${RATE_LIMIT_CHAT_BURST:-20}
+      RATE_LIMIT_CHAT_PER_SEC: ${RATE_LIMIT_CHAT_PER_SEC:-1.0}
+      RATE_LIMIT_FEEDBACK_BURST: ${RATE_LIMIT_FEEDBACK_BURST:-10}
+      RATE_LIMIT_FEEDBACK_PER_SEC: ${RATE_LIMIT_FEEDBACK_PER_SEC:-0.5}
       RUST_LOG: "chat_orch=info,tower_http=info"
       LOG_FORMAT: "json"
     ports:
@@ -325,7 +400,9 @@ services:
       - conversation-chat
       - hospital-mock
     networks:
-      - archsoft
+      - net-orchestrator
+      - net-tenant
+      - net-compliance
 
   frontend:
     build:
@@ -343,8 +420,7 @@ services:
         VITE_CHAT_API_URL: ${VITE_CHAT_API_URL:-/api/v1}
     container_name: archsoft-frontend
     ports:
-      # FrontEnd moved from nginx (port 80) to Next.js standalone (port 3000)
-      # in the Next.js 15 migration. Container listens on 3000 now.
+      # The Next.js standalone server listens on 3000 (was nginx :80).
       - "3000:3000"
     depends_on:
       tenant:
@@ -356,7 +432,9 @@ services:
       compliance:
         condition: service_healthy
     networks:
-      - archsoft
+      - net-public
+      - net-tenant
+      - net-compliance
 
   # ---------------------------------------------------------------------------
   # Compliance & Metrics API (Python/FastAPI) — back-compat for the old
@@ -385,7 +463,8 @@ services:
       email-mongo:
         condition: service_healthy
     networks:
-      - archsoft
+      - net-compliance
+      - net-db
 
   # ---------------------------------------------------------------------------
   # Email dispatch + audit trail (Java/Spring Boot, SendGrid + local Mongo).
@@ -422,7 +501,8 @@ services:
       email-mongo:
         condition: service_healthy
     networks:
-      - archsoft
+      - net-compliance
+      - net-db
 
   # ---------------------------------------------------------------------------
   # Grafana — observability dashboards. Empty out of the box; configure
@@ -449,15 +529,24 @@ services:
       retries: 5
       start_period: 30s
     networks:
-      - archsoft
+      - net-public
+      - net-compliance
 
 networks:
-  archsoft:
+  net-public:
+    driver: bridge
+  net-orchestrator:
+    driver: bridge
+  net-tenant:
+    driver: bridge
+  net-compliance:
+    driver: bridge
+  net-db:
     driver: bridge
 
 volumes:
   email-mongo-data:
+  conversation-mongo-data:
   hospital-postgres-data:
   tenant-postgres-data:
-  conversation-mongo-data:
   grafana-data:
