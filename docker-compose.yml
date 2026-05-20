@@ -39,9 +39,53 @@ services:
     networks:
       - archsoft
 
-  # Local Mongo dedicated to the email audit service. conversation-chat
-  # still talks to hosted Atlas via MONGO_URI; this one is intentionally
-  # in-cluster so the audit trail stays self-contained for the demo.
+  # Local Postgres backing Tenant. Global schema applied on first boot via
+  # Tenant/migrations/global/*.up.sql files mounted into /docker-entrypoint-initdb.d
+  # (Postgres convention). Per-tenant schemas are created at runtime via
+  # provisionTenantSchema() when tenants are inserted via the API.
+  # The 'tenant-seed' one-shot below populates a demo app_admin.
+  tenant-postgres:
+    image: postgres:16-alpine
+    container_name: archsoft-tenant-postgres
+    environment:
+      POSTGRES_DB: ${TENANT_DB_NAME:-postgres}
+      POSTGRES_USER: ${TENANT_DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${TENANT_DB_PASSWORD:-admin}
+    expose:
+      - "5432"
+    volumes:
+      - tenant-postgres-data:/var/lib/postgresql/data
+      - ./Tenant/migrations/global/000001_create_tenants.up.sql:/docker-entrypoint-initdb.d/01_tenants.sql:ro
+      - ./Tenant/migrations/global/000002_create_users.up.sql:/docker-entrypoint-initdb.d/02_users.sql:ro
+      - ./Tenant/migrations/global/000003_create_tool_registry.up.sql:/docker-entrypoint-initdb.d/03_tool_registry.sql:ro
+      - ./scripts/data-stores/user-auth-init.sql:/docker-entrypoint-initdb.d/04_user_auth.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TENANT_DB_USER:-postgres} -d ${TENANT_DB_NAME:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - archsoft
+
+  # Local Mongo backing conversation-chat session+turn history.
+  # Replaces the legacy Atlas MONGO_URI for self-contained local dev.
+  conversation-mongo:
+    image: mongo:7
+    container_name: archsoft-conversation-mongo
+    expose:
+      - "27017"
+    volumes:
+      - conversation-mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - archsoft
+
+  # Local Mongo dedicated to the email audit service + compliance audit log.
   email-mongo:
     image: mongo:7
     container_name: archsoft-email-mongo
@@ -85,17 +129,77 @@ services:
       context: ./Tenant
     container_name: archsoft-tenant
     environment:
-      DATABASE_URL: ${DATABASE_URL}
+      # Local Postgres (tenant-postgres container) by default. Override via .env
+      # if you want to point at a hosted Postgres (e.g. Supabase) instead.
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:admin@tenant-postgres:5432/postgres?sslmode=disable}
       JWT_SECRET: ${JWT_SECRET}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
       GIN_MODE: release
+      # Force Go's pure DNS resolver so resolv.conf is read correctly inside
+      # the container. Without this, the cgo resolver hides actual errors
+      # behind misleading "network is unreachable" messages.
+      GODEBUG: netdns=go
     ports:
       - "8080:8080"
+    depends_on:
+      tenant-postgres:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/api/v1/health"]
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 20s
+    networks:
+      - archsoft
+
+  # User-Auth — OTP-via-email microservice in front of Tenant's user CRUD.
+  # FrontEnd /signup + Telegram pre-registration call it for code generation
+  # and verification. Owns its own database (`user_auth`) on the shared
+  # tenant-postgres instance.
+  user-auth:
+    build:
+      context: ./User-Auth
+    container_name: archsoft-user-auth
+    environment:
+      DB_URL: postgresql://postgres:admin@tenant-postgres:5432/user_auth?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET}
+      EMAIL_SERVICE_URL: http://email-send:8080/api/v1/emails
+      AUTH_FROM_EMAIL: ${EMAIL_FROM_DEFAULT:-noreply@unagent.local}
+      # Tenant exchange: after verify-code succeeds, User-Auth POSTs to
+      # tenant's /internal/auth/upsert-from-otp with the shared key, and
+      # forwards the canonical session JWT back to the caller.
+      TENANT_INTERNAL_URL: http://tenant:8080
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
+      PORT: "8080"
+      GODEBUG: netdns=go
+    ports:
+      - "8093:8080"
+    depends_on:
+      tenant-postgres:
+        condition: service_healthy
+      email-send:
+        condition: service_started
+    networks:
+      - archsoft
+
+  # One-shot: seed an app_admin row after tenant-postgres applies its global schema.
+  # Uses Tenant/cmd/seed/main.go (built into the same image). Idempotent — exits
+  # cleanly if the admin already exists.
+  tenant-seed:
+    build:
+      context: ./Tenant
+    container_name: archsoft-tenant-seed
+    command: ["/app/seed"]
+    environment:
+      DATABASE_URL: postgresql://postgres:admin@tenant-postgres:5432/postgres?sslmode=disable
+      SEED_EMAIL: ${SEED_EMAIL:-admin@demo.com}
+      SEED_PASSWORD: ${SEED_PASSWORD:-demo1234}
+      GODEBUG: netdns=go
+    depends_on:
+      tenant-postgres:
+        condition: service_healthy
+    restart: "no"
     networks:
       - archsoft
 
@@ -124,7 +228,9 @@ services:
       APP_VERSION: "1.0.0"
       GIN_MODE: release
       REDIS_URL: "redis://redis:6379/1"
-      MONGO_URI: ${MONGO_URI}
+      # Local Mongo (conversation-mongo container) by default; override via .env
+      # for hosted Atlas.
+      MONGO_URI: ${MONGO_URI:-mongodb://conversation-mongo:27017}
       MONGO_DB: ${MONGO_DB:-conversatory}
       ACR_SERVICE_URL: "http://agent-runtime:3100"
       TENANT_SERVICE_URL: "http://agent-runtime:3100"
@@ -143,6 +249,8 @@ services:
       - "8082:8082"
     depends_on:
       redis:
+        condition: service_healthy
+      conversation-mongo:
         condition: service_healthy
       agent-runtime:
         condition: service_started
@@ -230,7 +338,9 @@ services:
         VITE_CHAT_API_URL: ${VITE_CHAT_API_URL:-/api/v1}
     container_name: archsoft-frontend
     ports:
-      - "3000:80"
+      # FrontEnd moved from nginx (port 80) to Next.js standalone (port 3000)
+      # in the Next.js 15 migration. Container listens on 3000 now.
+      - "3000:3000"
     depends_on:
       tenant:
         condition: service_healthy
@@ -343,4 +453,6 @@ networks:
 volumes:
   email-mongo-data:
   hospital-postgres-data:
+  tenant-postgres-data:
+  conversation-mongo-data:
   grafana-data:
