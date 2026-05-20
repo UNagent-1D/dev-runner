@@ -295,6 +295,11 @@ services:
       HOSPITAL_MOCK_URL: "http://hospital-mock:8080"
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_DEFAULT_TENANT_ID: ${TELEGRAM_DEFAULT_TENANT_ID:-demo-tenant}
+      TELEGRAM_DEFAULT_TENANT_SLUG: ${TELEGRAM_DEFAULT_TENANT_SLUG:-demo-hospital}
+      # When USER_AUTH_URL is set, every Telegram message is gated by the
+      # OTP pre-registration flow before reaching the LLM. Leave unset to
+      # disable the gate (legacy behavior).
+      USER_AUTH_URL: ${USER_AUTH_URL:-http://user-auth:8080}
       # Twilio voice channel (P2-P3, not yet wired). Leave empty to disable.
       # Account SID + Auth Token are sufficient for the REST API; API Key
       # SID/Secret are required to sign Access Tokens for client SDKs.
