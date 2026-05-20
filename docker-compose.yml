@@ -55,14 +55,32 @@ services:
     expose:
       - "5432"
     volumes:
+      # Schema is applied by the tenant-migrate service (golang-migrate);
+      # Tenant main uses migrations, not a baked init script.
       - tenant-postgres-data:/var/lib/postgresql/data
-      - ./Tenant/sql/init_schema.sql:/docker-entrypoint-initdb.d/01_init_schema.sql:ro
-      - ./scripts/data-stores/tenant-seed.sql:/docker-entrypoint-initdb.d/02_seed_demo.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${TENANT_DB_USER:-tenant} -d ${TENANT_DB_NAME:-tenant}"]
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - archsoft
+
+  # One-shot: applies Tenant's global schema migrations to tenant-postgres
+  # before the tenant service starts. Exits 0 when done.
+  tenant-migrate:
+    image: migrate/migrate:v4.18.1
+    container_name: archsoft-tenant-migrate
+    volumes:
+      - ./Tenant/migrations/global:/migrations:ro
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://${TENANT_DB_USER:-tenant}:${TENANT_DB_PASSWORD:-tenant}@tenant-postgres:5432/${TENANT_DB_NAME:-tenant}?sslmode=disable"
+      - "up"
+    depends_on:
+      tenant-postgres:
+        condition: service_healthy
+    restart: on-failure
     networks:
       - archsoft
 
@@ -115,19 +133,20 @@ services:
       # DATABASE_URL defaults to the local tenant-postgres container so a
       # fresh `docker compose up` works without secrets. Override in .env
       # to point at Supabase or a managed Postgres.
-      DATABASE_URL: ${DATABASE_URL:-postgresql://${TENANT_DB_USER:-tenant}:${TENANT_DB_PASSWORD:-tenant}@tenant-postgres:5432/${TENANT_DB_NAME:-tenant}?sslmode=disable}
+      DATABASE_URL: ${DATABASE_URL:-postgres://${TENANT_DB_USER:-tenant}:${TENANT_DB_PASSWORD:-tenant}@tenant-postgres:5432/${TENANT_DB_NAME:-tenant}?sslmode=disable}
       JWT_SECRET: ${JWT_SECRET}
       GIN_MODE: release
-      COMPLIANCE_URL: "http://compliance:8091"
-      AUTH_RATE_LIMIT_BURST: ${AUTH_RATE_LIMIT_BURST:-5}
-      AUTH_RATE_LIMIT_PER_SEC: ${AUTH_RATE_LIMIT_PER_SEC:-0.0333}
+      # Shared secret with the orchestrator for /api/v1/internal/* calls.
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
     ports:
       - "8080:8080"
     depends_on:
       tenant-postgres:
         condition: service_healthy
+      tenant-migrate:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/v1/health"]
       interval: 15s
       timeout: 5s
       retries: 5
