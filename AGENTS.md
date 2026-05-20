@@ -696,10 +696,10 @@ backends — same routing rules as `FrontEnd/nginx.conf:41-87`).
 - **Single source of truth** for config: `.env.dev` / `.env.prod` in the
   umbrella (gitignored). The bootstrap uploads them as Railway shared
   variables; services reference keys via `${{ shared.KEY }}`.
-- **CI/CD:** `.github/workflows/{deploy-dev,deploy-prod,pr-gate}.yml`.
-  Push to `dev` → deploy dev. PR `dev → main` only (enforced by
-  `pr-gate.yml`); prod won't deploy unless the same SHA has a green
-  deploy-dev run.
+- **CI/CD:** *transitioning to per-repo*. The end state — and the
+  architectural rule — is that **each service repo owns its own
+  `.github/workflows/` for CI + deploy**. The umbrella is the local-dev
+  orchestrator, nothing more. See §11.2 below for the migration map.
 
 First-time setup is one command: `scripts/bootstrap.sh`. The companion doc
 `scripts/bootstrap.md` lists the three human checklists (env files, GitHub
@@ -708,6 +708,53 @@ secrets, Cloudflare zone). After that, every change ships via `git push`.
 The earlier Oracle Cloud + Cloudflare Pages plan is retired — Railway
 Hobby covers the resources comfortably and removes the OCI / cloudflared
 moving parts.
+
+### 11.2 Per-repo CI/CD (in progress)
+
+**Principle:** CI/CD lives in the repo whose code it builds. The umbrella
+holds only local-dev tooling (`docker-compose.yml`, `scripts/bootstrap.sh`,
+`.env.example`, this playbook). No deploy workflows. No matrix.
+
+**Convention for each migrated service:**
+- `.github/workflows/ci.yml` — runs build/test/lint for the service on
+  every push + PR. No cross-repo dependencies; checkout is the service repo
+  only, no submodules, no PAT.
+- `.github/workflows/deploy.yml` — `push: branches: [main]` deploys to
+  Railway `dev`; `workflow_dispatch` with `env=prod` deploys to Railway
+  `Production`. Manual prod promotion until a cross-service gate is designed.
+- Repo secrets (per service): `RAILWAY_TOKEN_DEV`, `RAILWAY_TOKEN_PROD`.
+- Repo variables (per service): `RAILWAY_<ENV>_<SVC>_URL` for the
+  post-deploy smoke step.
+- **Railway dashboard one-time flip** (when migrating a service): service
+  → Settings → Source → **Dockerfile Path**: change from
+  `<submodule>/Dockerfile` (umbrella-relative) to `Dockerfile` (repo-root).
+  Required in both `dev` and `prod` environments. CLI can't do this reliably
+  per `scripts/bootstrap.md` §Manual fallbacks.
+
+**Migration status (2026-05-20):**
+
+| Service | Repo | Status |
+|---|---|---|
+| chat-orch | `UNagent-1D/chat-orch` | ✅ per-repo CI/CD live; removed from umbrella matrix |
+| Tenant | `UNagent-1D/Tenant` | ⏳ umbrella matrix |
+| conversation-chat | `UNagent-1D/conversation-chat` | ⏳ umbrella matrix |
+| agent-runtime | `UNagent-1D/agent-runtime` | ⏳ umbrella matrix |
+| Hospital-MP | `UNagent-1D/Hospital-MP` | ⏳ umbrella matrix |
+| UN_email_send_ms | `UNagent-1D/UN_email_send_ms` | ⏳ umbrella matrix |
+| UN_message_broker_mb | `UNagent-1D/UN_message_broker_mb` | ⏳ umbrella matrix |
+| Compliance | in-tree (`Compliance/`) | ⏳ spin out to own repo, then migrate |
+| Cloudflare Worker | in-tree (`cloudflare-worker/`) | ⏳ move into FrontEnd repo, then migrate |
+| FrontEnd | `UNagent-1D/FrontEnd` | ⏳ umbrella matrix (will also own the Worker post-move) |
+
+**End state:** umbrella `.github/workflows/` either disappears or shrinks
+to a single `compose-validate.yml` that lints `docker-compose.yml`. The
+existing `deploy-dev.yml`, `deploy-prod.yml`, `pr-gate.yml`, and the bulk
+of `ci.yml` are on a deathwatch — they exit one service-migration at a
+time.
+
+**`User-Auth` adoption (deferred):** `UNagent-1D/User-Auth` exists as a
+standalone Go service but has never been wired into the umbrella. When it
+is, it gets per-repo CI/CD from day one — no umbrella-matrix detour.
 
 ---
 
