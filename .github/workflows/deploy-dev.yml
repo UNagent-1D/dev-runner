@@ -25,7 +25,8 @@ jobs:
       fail-fast: false
       matrix:
         service:
-          - chat-orch
+          # chat-orch deploys from its own repo now — see UNagent-1D/chat-orch
+          # .github/workflows/deploy.yml. Other services will follow.
           - tenant
           - conversation-chat
           - agent-runtime

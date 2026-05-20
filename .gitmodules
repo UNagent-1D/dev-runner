@@ -12,10 +12,6 @@
 [submodule "Hospital-MP"]
 	path = Hospital-MP
 	url = git@github.com:UNagent-1D/Hospital-MP.git
-[submodule "Metricas"]
-	path = Metricas
-	url = git@github.com:UNagent-1D/Metricas.git
-	branch = main
 [submodule "Tenant"]
 	path = Tenant
 	url = git@github.com:UNagent-1D/Tenant.git
