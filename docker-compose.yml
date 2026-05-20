@@ -13,7 +13,7 @@ services:
       timeout: 3s
       retries: 5
     networks:
-      - archsoft
+      - net-db
 
   # Local Postgres backing Hospital-MP. Schema + seed are applied on first
   # boot via /docker-entrypoint-initdb.d (Postgres convention). Subsequent
@@ -37,7 +37,7 @@ services:
       timeout: 5s
       retries: 10
     networks:
-      - archsoft
+      - net-db
 
   # ---------------------------------------------------------------------------
   # Local Postgres for the Tenant service. Mirrors the Railway `tenant-postgres`
@@ -83,7 +83,7 @@ services:
       retries: 5
       start_period: 15s
     networks:
-      - archsoft
+      - net-db
 
   # Message broker — RabbitMQ with management UI.
   # Built from UN_message_broker_mb which pre-declares chat_requests +
@@ -102,7 +102,7 @@ services:
       retries: 5
       start_period: 30s
     networks:
-      - archsoft
+      - net-db
 
   # ---------------------------------------------------------------------------
   # Application services
@@ -133,7 +133,7 @@ services:
       retries: 5
       start_period: 20s
     networks:
-      - archsoft
+      - net-tenant
 
   hospital-mock:
     build:
@@ -149,7 +149,8 @@ services:
       hospital-postgres:
         condition: service_healthy
     networks:
-      - archsoft
+      - net-orchestrator
+      - net-db
 
   conversation-chat:
     build:
@@ -185,7 +186,9 @@ services:
       rabbitmq:
         condition: service_healthy
     networks:
-      - archsoft
+      - net-orchestrator
+      - net-db
+      - net-tenant
 
   agent-runtime:
     build:
@@ -208,7 +211,8 @@ services:
       rabbitmq:
         condition: service_healthy
     networks:
-      - archsoft
+      - net-orchestrator
+      - net-db
 
   chat-orch:
     build:
@@ -252,7 +256,9 @@ services:
       - conversation-chat
       - hospital-mock
     networks:
-      - archsoft
+      - net-orchestrator
+      - net-tenant
+      - net-compliance
 
   frontend:
     build:
@@ -281,7 +287,9 @@ services:
       compliance:
         condition: service_healthy
     networks:
-      - archsoft
+      - net-public
+      - net-tenant
+      - net-compliance
 
   # ---------------------------------------------------------------------------
   # Compliance & Metrics API (Python/FastAPI) — back-compat for the old
@@ -310,7 +318,8 @@ services:
       email-mongo:
         condition: service_healthy
     networks:
-      - archsoft
+      - net-compliance
+      - net-db
 
   # ---------------------------------------------------------------------------
   # Email dispatch + audit trail (Java/Spring Boot, SendGrid + local Mongo).
@@ -347,7 +356,8 @@ services:
       email-mongo:
         condition: service_healthy
     networks:
-      - archsoft
+      - net-compliance
+      - net-db
 
   # ---------------------------------------------------------------------------
   # Grafana — observability dashboards. Empty out of the box; configure
@@ -374,10 +384,19 @@ services:
       retries: 5
       start_period: 30s
     networks:
-      - archsoft
+      - net-public
+      - net-compliance
 
 networks:
-  archsoft:
+  net-public:
+    driver: bridge
+  net-orchestrator:
+    driver: bridge
+  net-tenant:
+    driver: bridge
+  net-compliance:
+    driver: bridge
+  net-db:
     driver: bridge
 
 volumes:
