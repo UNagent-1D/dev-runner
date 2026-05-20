@@ -1,0 +1,12 @@
+{
+  "name": "llm-mock",
+  "version": "1.0.0",
+  "description": "OpenAI-compatible LLM mock with fixed delay for performance testing",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

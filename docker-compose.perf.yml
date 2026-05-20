@@ -1,0 +1,297 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# docker-compose.perf.yml — Performance-test overlay
+#
+# Usage (always paired with the base file):
+#
+#   # 1. Bring up everything with the LLM mock replacing OpenRouter
+#   docker compose -f docker-compose.yml -f docker-compose.perf.yml up -d --build
+#
+#   # 2. Wait ~30 s for services to be healthy, then fire k6
+#   docker compose -f docker-compose.yml -f docker-compose.perf.yml \
+#     --profile k6 run --rm k6
+#
+#   # 3. Open Grafana at http://localhost:3001
+#   #    Dashboard "UNAgent — k6 Chat Load Test" is pre-provisioned.
+#
+#   # 4. Watch resource usage in real time
+#   docker stats
+#
+#   # 5. Tear down (keeps volumes for inspection)
+#   docker compose -f docker-compose.yml -f docker-compose.perf.yml down
+#
+# Calibrado para 32 GB RAM / 12+ núcleos (prueba hasta 2000 VUs).
+# Para ajustar: edita los bloques deploy.resources.limits de cada servicio.
+# Referencia rápida de unidades: cpus='1.0' = 1 núcleo completo; memory=512M.
+# ──────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Overrides de servicios del base (solo cambian env, deploy, o volumes)
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # ── chat-orch: entry point, recibe todo el tráfico k6 ──────────────────────
+  chat-orch:
+    environment:
+      OPENAI_BASE_URL: "http://llm-mock:9999/v1"
+      OPENAI_API_KEY:  "perf-test-key"
+    depends_on:
+      llm-mock:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus:   '4.0'
+          memory: 5G
+        reservations:
+          cpus:   '0.5'
+          memory: 256M
+
+  # ── agent-runtime: proxying de sesiones y tool calls ───────────────────────
+  agent-runtime:
+    environment:
+      OPENAI_BASE_URL: "http://llm-mock:9999/v1"
+    depends_on:
+      llm-mock:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus:   '1.0'
+          memory: 512M
+        reservations:
+          cpus:   '0.25'
+          memory: 128M
+
+  # ── conversation-chat: historial de sesiones + Redis + Mongo ───────────────
+  conversation-chat:
+    environment:
+      OPENAI_BASE_URL: "http://llm-mock:9999/v1"
+      OPENAI_API_KEY:  "perf-test-key"
+    depends_on:
+      llm-mock:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus:   '1.0'
+          memory: 512M
+        reservations:
+          cpus:   '0.25'
+          memory: 128M
+
+  # ── tenant: auth + admin, poco tráfico durante el perf test ────────────────
+  tenant:
+    deploy:
+      resources:
+        limits:
+          cpus:   '0.5'
+          memory: 256M
+        reservations:
+          cpus:   '0.1'
+          memory: 64M
+
+  # ── hospital-mock: llamado por el loop de herramientas (tool calls) ─────────
+  hospital-mock:
+    deploy:
+      resources:
+        limits:
+          cpus:   '1.0'
+          memory: 512M
+        reservations:
+          cpus:   '0.1'
+          memory: 64M
+
+  # ── frontend: nginx + SPA estática, mínimo tráfico durante el perf test ─────
+  frontend:
+    deploy:
+      resources:
+        limits:
+          cpus:   '0.5'
+          memory: 128M
+        reservations:
+          cpus:   '0.1'
+          memory: 32M
+
+  # ── compliance: recibe métricas de cada turno (fire-and-forget) ────────────
+  compliance:
+    deploy:
+      resources:
+        limits:
+          cpus:   '1.0'
+          memory: 512M
+        reservations:
+          cpus:   '0.1'
+          memory: 64M
+
+  # ── email-send: Java necesita más heap que los demás ───────────────────────
+  email-send:
+    deploy:
+      resources:
+        limits:
+          cpus:   '0.5'
+          memory: 512M
+        reservations:
+          cpus:   '0.1'
+          memory: 256M
+
+  # ── rabbitmq: cola de mensajes asíncrona ───────────────────────────────────
+  rabbitmq:
+    deploy:
+      resources:
+        limits:
+          cpus:   '1.0'
+          memory: 512M
+        reservations:
+          cpus:   '0.25'
+          memory: 128M
+
+  # ── redis: caché de sesiones ───────────────────────────────────────────────
+  redis:
+    deploy:
+      resources:
+        limits:
+          cpus:   '1.0'
+          memory: 512M
+        reservations:
+          cpus:   '0.1'
+          memory: 128M
+
+  # ── hospital-postgres ──────────────────────────────────────────────────────
+  hospital-postgres:
+    deploy:
+      resources:
+        limits:
+          cpus:   '0.5'
+          memory: 512M
+        reservations:
+          cpus:   '0.1'
+          memory: 128M
+
+  # ── email-mongo ────────────────────────────────────────────────────────────
+  email-mongo:
+    deploy:
+      resources:
+        limits:
+          cpus:   '0.5'
+          memory: 512M
+        reservations:
+          cpus:   '0.1'
+          memory: 128M
+
+  # ── Grafana: auto-provisioning de datasource + dashboard ───────────────────
+  grafana:
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./performance/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./performance/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    deploy:
+      resources:
+        limits:
+          cpus:   '0.5'
+          memory: 512M
+        reservations:
+          cpus:   '0.1'
+          memory: 128M
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Servicios nuevos (solo en el overlay)
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # ── LLM mock: responde en 800 ms fijo, elimina varianza de OpenRouter ──────
+  llm-mock:
+    build:
+      context: ./performance/llm-mock
+    container_name: archsoft-llm-mock
+    environment:
+      PORT:               "9999"
+      LLM_MOCK_DELAY_MS:  "${LLM_MOCK_DELAY_MS:-800}"
+    ports:
+      - "9999:9999"
+    healthcheck:
+      test:     ["CMD-SHELL", "wget -qO- http://127.0.0.1:9999/health || exit 1"]
+      interval: 5s
+      timeout:  3s
+      retries:  5
+    networks:
+      - archsoft
+    deploy:
+      resources:
+        limits:
+          # Node.js + 2000 conexiones simultáneas durmiendo 800 ms
+          cpus:   '2.0'
+          memory: 1G
+        reservations:
+          cpus:   '0.1'
+          memory: 64M
+
+  # ── InfluxDB v1: recibe todos los puntos de k6 (escritura intensiva) ────────
+  influxdb:
+    image: influxdb:1.8
+    container_name: archsoft-influxdb
+    environment:
+      INFLUXDB_DB:                  k6
+      INFLUXDB_ADMIN_USER:          admin
+      INFLUXDB_ADMIN_PASSWORD:      admin123
+      INFLUXDB_HTTP_AUTH_ENABLED:   "false"
+    ports:
+      - "8086:8086"
+    volumes:
+      - influxdb-perf-data:/var/lib/influxdb
+    healthcheck:
+      test:         ["CMD", "curl", "-sf", "http://localhost:8086/ping"]
+      interval:     5s
+      timeout:      3s
+      retries:      10
+      start_period: 10s
+    networks:
+      - archsoft
+    deploy:
+      resources:
+        limits:
+          cpus:   '1.0'
+          memory: 1G
+        reservations:
+          cpus:   '0.25'
+          memory: 256M
+
+  # ── k6: generador de carga (activar con --profile k6) ──────────────────────
+  # Comando:
+  #   docker compose -f docker-compose.yml -f docker-compose.perf.yml \
+  #     --profile k6 run --rm k6
+  k6:
+    image: grafana/k6:latest
+    container_name: archsoft-k6
+    profiles:
+      - k6
+    command: >
+      run
+      --out influxdb=http://influxdb:8086/k6
+      /scripts/chat-load-test.js
+    environment:
+      CHAT_ORCH_URL:             "http://chat-orch:3000"
+      TENANT_ID:                 "demo-tenant"
+      K6_INFLUXDB_PUSH_INTERVAL: "5s"
+      VERBOSE:                   "${K6_VERBOSE:-0}"
+    volumes:
+      - ./performance/k6:/scripts:ro
+      - ./performance/results:/results
+    depends_on:
+      influxdb:
+        condition: service_healthy
+      llm-mock:
+        condition: service_healthy
+    networks:
+      - archsoft
+    deploy:
+      resources:
+        limits:
+          # 2000 VUs en Go runtime — CPU-intensivo en el pico
+          cpus:   '4.0'
+          memory: 3G
+        reservations:
+          cpus:   '0.5'
+          memory: 256M
+
+volumes:
+  influxdb-perf-data:
