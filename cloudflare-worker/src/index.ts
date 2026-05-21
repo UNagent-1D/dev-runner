@@ -46,6 +46,15 @@ export default {
     if (p.startsWith("/auth/")) return proxy(req, env.BACKEND_TENANT);
     if (p.startsWith("/api/admin/")) return proxy(req, env.BACKEND_TENANT);
     if (p.startsWith("/api/v1/tenants/")) return proxy(req, env.BACKEND_TENANT);
+    if (p === "/api/v1/users" || p.startsWith("/api/v1/users/")) {
+      return proxy(req, env.BACKEND_TENANT);
+    }
+    if (p === "/api/v1/auth/me" || p.startsWith("/api/v1/auth/me/")) {
+      return proxy(req, env.BACKEND_TENANT);
+    }
+    if (p === "/api/v1/tool-registry" || p.startsWith("/api/v1/tool-registry/")) {
+      return proxy(req, env.BACKEND_TENANT);
+    }
 
     // conversation-chat — sessions API + escalation queue.
     if (p.startsWith("/api/v1/sessions/")) return proxy(req, env.BACKEND_CHAT);
