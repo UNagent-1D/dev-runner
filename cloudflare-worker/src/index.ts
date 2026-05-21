@@ -16,6 +16,7 @@ interface Env {
   BACKEND_TENANT: string;
   BACKEND_CHAT: string;
   BACKEND_COMPLIANCE: string;
+  BACKEND_USER_AUTH: string;
 }
 
 export default {
@@ -29,6 +30,17 @@ export default {
     }
     // chat-orch — POST /v1/chat, /v1/feedback, everything else under /v1/.
     if (p.startsWith("/v1/")) return proxy(req, env.BACKEND_ORCH);
+
+    // User-Auth — OTP signup gate. Specific paths under /auth/ that belong
+    // to the User-Auth service; everything else under /auth/ (e.g.
+    // /auth/login) falls through to Tenant. Order matters — these must run
+    // BEFORE the generic /auth/ → Tenant rule below.
+    if (p === "/auth/request-code") return proxy(req, env.BACKEND_USER_AUTH);
+    if (p === "/auth/verify-code")  return proxy(req, env.BACKEND_USER_AUTH);
+    if (p === "/auth/resend-code")  return proxy(req, env.BACKEND_USER_AUTH);
+    if (p === "/auth/users" || p.startsWith("/auth/users/")) {
+      return proxy(req, env.BACKEND_USER_AUTH);
+    }
 
     // Tenant — login + admin CRUD + per-tenant CRUD.
     if (p.startsWith("/auth/")) return proxy(req, env.BACKEND_TENANT);

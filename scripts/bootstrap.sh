@@ -42,11 +42,12 @@ APP_SERVICES=(
   "hospital-mock:Hospital-MP/Dockerfile"
   "compliance:Compliance/Dockerfile"
   "email-send:UN_email_send_ms/Dockerfile"
+  "user-auth:User-Auth/Dockerfile"
   "message-broker:UN_message_broker_mb/Dockerfile"
 )
 # Services that need a public *.up.railway.app URL (the Cloudflare Worker
-# calls them from the edge). The other 4 stay on Railway's private network.
-PUBLIC_SERVICES=("chat-orch" "tenant" "conversation-chat" "compliance")
+# calls them from the edge). The others stay on Railway's private network.
+PUBLIC_SERVICES=("chat-orch" "tenant" "conversation-chat" "compliance" "user-auth")
 
 # Data stores: name, source (image: or dockerfile:), volume mount path.
 DATA_STORES=(
@@ -69,6 +70,10 @@ declare -A SERVICE_VARS=(
   ["hospital-mock"]="TENANT_DB_USER TENANT_DB_PASSWORD HOSPITAL_DB_USER HOSPITAL_DB_PASSWORD HOSPITAL_DB_NAME BACKEND_CHANNEL_KEY BACKEND_CHANNEL_ENABLED"
   ["compliance"]="MONGO_URI_COMPLIANCE MONGO_DB_COMPLIANCE BACKEND_CHANNEL_KEY BACKEND_CHANNEL_ENABLED"
   ["email-send"]="MONGO_URI_COMPLIANCE MONGO_DB_EMAIL SENDGRID_API_KEY SENDGRID_SANDBOX_MODE EMAIL_FROM_DEFAULT EMAIL_FROM_NAME JWT_SECRET EMAIL_AUTH_STUB BACKEND_CHANNEL_KEY BACKEND_CHANNEL_ENABLED"
+  # user-auth: shared keys only here. The Railway-private references
+  # (DB_URL, TENANT_INTERNAL_URL, EMAIL_SERVICE_URL, AUTH_FROM_EMAIL, PORT)
+  # are wired explicitly after the loop — they can't come from .env shared.
+  ["user-auth"]="JWT_SECRET INTERNAL_API_KEY BACKEND_CHANNEL_KEY BACKEND_CHANNEL_ENABLED"
   ["message-broker"]=""
 )
 
@@ -81,6 +86,7 @@ declare -A SERVICE_PORTS=(
   ["hospital-mock"]="8080"
   ["compliance"]="8091"
   ["email-send"]="8080"
+  ["user-auth"]="8080"
   ["message-broker"]="5672"
 )
 
@@ -279,7 +285,19 @@ for env in "${ENVIRONMENTS[@]}"; do
     fi
   done
 
-  # Generate public domains for the 4 Worker-facing services.
+  # user-auth: explicit wiring for env vars that can't come from .env shared
+  # (Railway service references). Idempotent — re-running just re-sets values.
+  log "  Wiring user-auth Railway-internal references…"
+  railway variables --service user-auth --environment "$env" \
+    --set 'DB_URL=postgresql://${{ shared.TENANT_DB_USER }}:${{ shared.TENANT_DB_PASSWORD }}@${{ tenant-postgres.RAILWAY_PRIVATE_DOMAIN }}:5432/user_auth?sslmode=disable' \
+    --set 'EMAIL_SERVICE_URL=http://${{ email-send.RAILWAY_PRIVATE_DOMAIN }}:8080/api/v1/emails' \
+    --set 'TENANT_INTERNAL_URL=http://${{ tenant.RAILWAY_PRIVATE_DOMAIN }}:8080' \
+    --set 'AUTH_FROM_EMAIL=${{ shared.EMAIL_FROM_DEFAULT }}' \
+    --set 'PORT=8080' \
+    --set 'RAILWAY_DOCKERFILE_PATH=User-Auth/Dockerfile' \
+    >/dev/null 2>&1 || warn "    couldn't set user-auth Railway refs (set manually in dashboard)"
+
+  # Generate public domains for the Worker-facing services.
   log "  Generating public domains for Worker-facing services…"
   for svc in "${PUBLIC_SERVICES[@]}"; do
     railway domain --service "$svc" --environment "$env" >/dev/null 2>&1 || true
