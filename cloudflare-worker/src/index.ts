@@ -49,9 +49,8 @@ export default {
     if (p === "/api/v1/users" || p.startsWith("/api/v1/users/")) {
       return proxy(req, env.BACKEND_TENANT);
     }
-    if (p === "/api/v1/auth/me" || p.startsWith("/api/v1/auth/me/")) {
-      return proxy(req, env.BACKEND_TENANT);
-    }
+    // /api/v1/auth/* covers /login, /me, /me/password, future additions.
+    if (p.startsWith("/api/v1/auth/")) return proxy(req, env.BACKEND_TENANT);
     if (p === "/api/v1/tool-registry" || p.startsWith("/api/v1/tool-registry/")) {
       return proxy(req, env.BACKEND_TENANT);
     }
