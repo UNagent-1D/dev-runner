@@ -307,7 +307,11 @@ services:
 
   chat-orch:
     build:
-      context: ./chat-orch
+      # Umbrella root as context so the Dockerfile can `COPY chat-orch/…`.
+      # Matches the Railway umbrella-matrix build path (RAILWAY_DOCKERFILE_PATH
+      # = chat-orch/Dockerfile, no RAILWAY_ROOT_DIRECTORY).
+      context: .
+      dockerfile: chat-orch/Dockerfile
     container_name: archsoft-chat-orch
     environment:
       SERVER_HOST: "0.0.0.0"
