@@ -27,7 +27,12 @@ set -euo pipefail
 # ──────────────────────────────────────────────────────────────────────────
 # Constants
 # ──────────────────────────────────────────────────────────────────────────
-PROJECT_NAME="unagent"
+# Project identity. Override via env (RAILWAY_PROJECT_ID or RAILWAY_PROJECT_NAME)
+# when the linked project has a different name. The script will NEVER
+# auto-create a project — if linking fails, it tells you to link manually
+# rather than spawning a duplicate.
+PROJECT_NAME="${RAILWAY_PROJECT_NAME:-unagent}"
+PROJECT_ID="${RAILWAY_PROJECT_ID:-}"
 ENVIRONMENTS=("dev" "prod")
 APP_SERVICES=(
   "chat-orch:chat-orch/Dockerfile"
@@ -179,13 +184,17 @@ if ! railway whoami >/dev/null 2>&1; then
 fi
 ok "Logged in to Railway as $(railway whoami | head -n 1)"
 
-if [ ! -f ".railway/config.json" ] && [ -z "${RAILWAY_PROJECT_ID:-}" ]; then
-  log "Linking project $PROJECT_NAME (creating if missing)…"
-  if ! railway link --project "$PROJECT_NAME" 2>/dev/null; then
-    railway init --name "$PROJECT_NAME"
-  fi
+# Detect existing link via `railway status` (works whether config.json is local
+# or in ~/.config/railway). Only link if no project is associated.
+if railway status --json >/dev/null 2>&1; then
+  current_name="$(railway status --json 2>/dev/null | jq -r '.name // empty')"
+  ok "Already linked to project: $current_name"
+elif [ -n "$PROJECT_ID" ]; then
+  log "Linking project by ID ($PROJECT_ID)…"
+  railway link --project "$PROJECT_ID" || err "Failed to link by ID. Run 'railway link' manually first."
+else
+  err "Not linked to a Railway project. Run 'railway link' manually first (pick the right project + environment), then re-run this script. Alternatively set RAILWAY_PROJECT_ID=<uuid> to link non-interactively. The script will NEVER auto-create a project (it caused a duplicate once)."
 fi
-ok "Project linked: $PROJECT_NAME"
 
 # ──────────────────────────────────────────────────────────────────────────
 # Sync-env mode: push .env.<env> to Railway shared vars and stop.
