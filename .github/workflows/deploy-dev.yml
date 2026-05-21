@@ -51,50 +51,49 @@ jobs:
         run: railway up --service ${{ matrix.service }} --environment dev --detach
 
   # ---------------------------------------------------------------------------
-  # Cloudflare Worker — DISABLED. FrontEnd was migrated from Vite to Next.js
-  # standalone but the Worker still expects a static `dist/` directory. Until
-  # FrontEnd is converted to Next.js static export (next.config: output:
-  # 'export', distDir: 'dist', drop server-side cookies()), this job fails on
-  # every run. Re-enable by uncommenting the block below.
+  # Cloudflare Worker — builds the Next.js static export and uploads the
+  # bundle via wrangler. FrontEnd now uses output:'export' + distDir:'dist'
+  # so `next build` writes the static SPA to FrontEnd/dist/, which is what
+  # wrangler.toml's [assets] binding points at.
   # ---------------------------------------------------------------------------
-  # deploy-worker:
-  #   name: Cloudflare Worker
-  #   runs-on: ubuntu-latest
-  #   environment: dev
-  #   env:
-  #     CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-  #     CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-  #   steps:
-  #     - name: Checkout (with submodules)
-  #       uses: actions/checkout@v4
-  #       with:
-  #         submodules: recursive
-  #         token: ${{ secrets.SUBMODULES_TOKEN }}
-  #         fetch-depth: 1
-  #
-  #     - name: Install pnpm
-  #       uses: pnpm/action-setup@v4
-  #       with:
-  #         version: 9
-  #
-  #     - name: Set up Node.js
-  #       uses: actions/setup-node@v4
-  #       with:
-  #         node-version: "20"
-  #         cache: pnpm
-  #         cache-dependency-path: FrontEnd/pnpm-lock.yaml
-  #
-  #     - name: Build FrontEnd (Vite via pnpm)
-  #       run: |
-  #         cd FrontEnd
-  #         pnpm install --frozen-lockfile
-  #         pnpm run build
-  #
-  #     - name: Install Worker deps + deploy
-  #       run: |
-  #         cd cloudflare-worker
-  #         npm ci
-  #         npx wrangler deploy --env dev
+  deploy-worker:
+    name: Cloudflare Worker
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.SUBMODULES_TOKEN }}
+          fetch-depth: 1
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: FrontEnd/pnpm-lock.yaml
+
+      - name: Build FrontEnd (Next.js static export)
+        run: |
+          cd FrontEnd
+          pnpm install --frozen-lockfile
+          pnpm run build
+
+      - name: Install Worker deps + deploy
+        run: |
+          cd cloudflare-worker
+          npm ci
+          npx wrangler deploy --env dev
 
   # ---------------------------------------------------------------------------
   # Smoke tests — proves the deploy actually wired up. Health endpoints have
@@ -103,7 +102,7 @@ jobs:
   smoke:
     name: Smoke (dev)
     runs-on: ubuntu-latest
-    needs: [deploy-backends]
+    needs: [deploy-backends, deploy-worker]
     steps:
       - name: Probe Worker (SPA root)
         run: |
