@@ -106,11 +106,7 @@ services:
   # bootstrapped via the user-auth-init.sql mount on tenant-postgres above.
   user-auth:
     build:
-      # Umbrella root as context so the Dockerfile can `COPY User-Auth/…`.
-      # Matches the Railway umbrella-matrix build path (Dockerfile path is
-      # `User-Auth/Dockerfile`, context is the umbrella checkout).
-      context: .
-      dockerfile: User-Auth/Dockerfile
+      context: ./User-Auth
     container_name: archsoft-user-auth
     environment:
       DB_URL: postgresql://${TENANT_DB_USER:-tenant}:${TENANT_DB_PASSWORD:-tenant}@tenant-postgres:5432/user_auth?sslmode=disable
@@ -307,11 +303,7 @@ services:
 
   chat-orch:
     build:
-      # Umbrella root as context so the Dockerfile can `COPY chat-orch/…`.
-      # Matches the Railway umbrella-matrix build path (RAILWAY_DOCKERFILE_PATH
-      # = chat-orch/Dockerfile, no RAILWAY_ROOT_DIRECTORY).
-      context: .
-      dockerfile: chat-orch/Dockerfile
+      context: ./chat-orch
     container_name: archsoft-chat-orch
     environment:
       SERVER_HOST: "0.0.0.0"

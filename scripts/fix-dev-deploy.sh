@@ -149,6 +149,16 @@ apply_service email-send         "UN_email_send_ms" "Dockerfile" \
   "AUTH_STUB=$(v EMAIL_AUTH_STUB)" \
   "LOG_FORMAT=json"
 
+apply_service user-auth          "User-Auth" "Dockerfile" \
+  "DB_URL=postgresql://$(v TENANT_DB_USER):$(v TENANT_DB_PASSWORD)@tenant-postgres.railway.internal:5432/user_auth?sslmode=disable" \
+  "JWT_SECRET=$(v JWT_SECRET)" \
+  "EMAIL_SERVICE_URL=http://email-send.railway.internal:8080/api/v1/emails" \
+  "AUTH_FROM_EMAIL=$(v EMAIL_FROM_DEFAULT)" \
+  "TENANT_INTERNAL_URL=http://tenant.railway.internal:8080" \
+  "INTERNAL_API_KEY=$(v INTERNAL_API_KEY)" \
+  "PORT=8080" \
+  "CORS_ALLOW_ORIGIN=$(v CORS_ALLOW_ORIGIN)"
+
 ok "All service variables set with resolved values."
 
 # ──────────────────────────────────────────────────────────────────────────

@@ -286,7 +286,9 @@ for env in "${ENVIRONMENTS[@]}"; do
   done
 
   # user-auth: explicit wiring for env vars that can't come from .env shared
-  # (Railway service references). Idempotent — re-running just re-sets values.
+  # (Railway service references). Source config (Root Directory=User-Auth,
+  # Dockerfile=Dockerfile) is set per the prod pattern by the main service
+  # loop above + Railway dashboard. Idempotent — re-running just re-sets.
   log "  Wiring user-auth Railway-internal references…"
   railway variables --service user-auth --environment "$env" \
     --set 'DB_URL=postgresql://${{ shared.TENANT_DB_USER }}:${{ shared.TENANT_DB_PASSWORD }}@${{ tenant-postgres.RAILWAY_PRIVATE_DOMAIN }}:5432/user_auth?sslmode=disable' \
@@ -294,7 +296,6 @@ for env in "${ENVIRONMENTS[@]}"; do
     --set 'TENANT_INTERNAL_URL=http://${{ tenant.RAILWAY_PRIVATE_DOMAIN }}:8080' \
     --set 'AUTH_FROM_EMAIL=${{ shared.EMAIL_FROM_DEFAULT }}' \
     --set 'PORT=8080' \
-    --set 'RAILWAY_DOCKERFILE_PATH=User-Auth/Dockerfile' \
     >/dev/null 2>&1 || warn "    couldn't set user-auth Railway refs (set manually in dashboard)"
 
   # Generate public domains for the Worker-facing services.
