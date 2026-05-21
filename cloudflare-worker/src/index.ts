@@ -47,8 +47,11 @@ export default {
     if (p.startsWith("/api/admin/")) return proxy(req, env.BACKEND_TENANT);
     if (p.startsWith("/api/v1/tenants/")) return proxy(req, env.BACKEND_TENANT);
 
-    // conversation-chat — sessions API.
+    // conversation-chat — sessions API + escalation queue.
     if (p.startsWith("/api/v1/sessions/")) return proxy(req, env.BACKEND_CHAT);
+    if (p === "/api/v1/escalations" || p.startsWith("/api/v1/escalations/")) {
+      return proxy(req, env.BACKEND_CHAT);
+    }
 
     // Compliance — KPI cards + timeseries.
     if (p.startsWith("/stats/")) return proxy(req, env.BACKEND_COMPLIANCE);
