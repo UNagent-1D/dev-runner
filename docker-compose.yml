@@ -52,6 +52,7 @@ services:
       - "5432"
     volumes:
       - tenant-postgres-data:/var/lib/postgresql/data
+      - ./scripts/data-stores/user-auth-init.sql:/docker-entrypoint-initdb.d/10_user_auth.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${TENANT_DB_USER:-tenant} -d ${TENANT_DB_NAME:-tenant}"]
       interval: 5s
@@ -77,6 +78,63 @@ services:
     restart: on-failure
     networks:
       - tenant_db_net
+
+  # One-shot: seeds an app_admin row (admin@demo.com / demo1234) after the
+  # global migrations finish. Idempotent — exits 0 if the admin exists.
+  tenant-seed:
+    build:
+      context: ./Tenant
+    container_name: archsoft-tenant-seed
+    command: ["/app/seed"]
+    environment:
+      DATABASE_URL: postgres://${TENANT_DB_USER:-tenant}:${TENANT_DB_PASSWORD:-tenant}@tenant-postgres:5432/${TENANT_DB_NAME:-tenant}?sslmode=disable
+      SEED_EMAIL: ${SEED_EMAIL:-admin@demo.com}
+      SEED_PASSWORD: ${SEED_PASSWORD:-demo1234}
+      GODEBUG: netdns=go
+    depends_on:
+      tenant-postgres:
+        condition: service_healthy
+      tenant-migrate:
+        condition: service_completed_successfully
+    restart: "no"
+    networks:
+      - tenant_db_net
+
+  # User-Auth — OTP-via-email microservice in front of Tenant's user CRUD.
+  # FrontEnd /signup + Telegram pre-registration call it. Owns its own
+  # database (`user_auth`) on the shared tenant-postgres instance,
+  # bootstrapped via the user-auth-init.sql mount on tenant-postgres above.
+  user-auth:
+    build:
+      context: ./User-Auth
+    container_name: archsoft-user-auth
+    environment:
+      DB_URL: postgresql://${TENANT_DB_USER:-tenant}:${TENANT_DB_PASSWORD:-tenant}@tenant-postgres:5432/user_auth?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET}
+      EMAIL_SERVICE_URL: http://email-send:8080/api/v1/emails
+      AUTH_FROM_EMAIL: ${EMAIL_FROM_DEFAULT:-noreply@unagent.local}
+      # Tenant exchange after verify-code: hands the verified identity to
+      # Tenant via /internal/auth/upsert-from-otp to mint the canonical JWT.
+      TENANT_INTERNAL_URL: http://tenant:8080
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
+      PORT: "8080"
+      GODEBUG: netdns=go
+    ports:
+      - "8093:8080"
+    depends_on:
+      tenant-postgres:
+        condition: service_healthy
+      email-send:
+        condition: service_started
+    networks:
+      # auth zone (chat-orch + frontend reach it via orch_net for /verify-otp)
+      - orch_net
+      # talks to tenant (tenant_net) for upsert-from-otp
+      - tenant_net
+      # owns the user_auth DB on tenant-postgres (tenant_db_net)
+      - tenant_db_net
+      # delivers OTP codes via email-send
+      - email_net
 
   # Local Mongo dedicated to the email audit service.
   email-mongo:
@@ -226,6 +284,10 @@ services:
       HOSPITAL_MOCK_URL: "http://hospital-mock:8080"
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
       OPENAI_DEFAULT_MODEL: ${OPENAI_DEFAULT_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
+      # Resolves per-tenant agent config from Tenant /internal/.../profiles/active.
+      # Falls back to hardcoded hospitalProfile if Tenant returns nothing.
+      TENANT_INTERNAL_URL: http://tenant:8080
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
       RABBITMQ_URL: "amqp://rabbitmq:5672"
       BACKEND_CHANNEL_KEY: ${BACKEND_CHANNEL_KEY:-}
       BACKEND_CHANNEL_ENABLED: ${BACKEND_CHANNEL_ENABLED:-false}
@@ -252,6 +314,11 @@ services:
       HOSPITAL_MOCK_URL: "http://hospital-mock:8080"
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_DEFAULT_TENANT_ID: ${TELEGRAM_DEFAULT_TENANT_ID:-demo-tenant}
+      TELEGRAM_DEFAULT_TENANT_SLUG: ${TELEGRAM_DEFAULT_TENANT_SLUG:-demo-hospital}
+      # When set, every Telegram message goes through the OTP gate (email →
+      # 6-digit code) before reaching the LLM. Leave unset to disable.
+      USER_AUTH_URL: ${USER_AUTH_URL:-http://user-auth:8080}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
       TWILIO_API_KEY_SID: ${TWILIO_API_KEY_SID:-}

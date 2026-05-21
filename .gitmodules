@@ -26,3 +26,7 @@
 [submodule "UN_message_broker_mb"]
 	path = UN_message_broker_mb
 	url = git@github.com:UNagent-1D/UN_message_broker_mb.git
+[submodule "User-Auth"]
+	path = User-Auth
+	url = git@github.com:UNagent-1D/User-Auth.git
+	branch = main
