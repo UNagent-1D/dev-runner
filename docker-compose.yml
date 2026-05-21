@@ -106,7 +106,11 @@ services:
   # bootstrapped via the user-auth-init.sql mount on tenant-postgres above.
   user-auth:
     build:
-      context: ./User-Auth
+      # Umbrella root as context so the Dockerfile can `COPY User-Auth/…`.
+      # Matches the Railway umbrella-matrix build path (Dockerfile path is
+      # `User-Auth/Dockerfile`, context is the umbrella checkout).
+      context: .
+      dockerfile: User-Auth/Dockerfile
     container_name: archsoft-user-auth
     environment:
       DB_URL: postgresql://${TENANT_DB_USER:-tenant}:${TENANT_DB_PASSWORD:-tenant}@tenant-postgres:5432/user_auth?sslmode=disable
