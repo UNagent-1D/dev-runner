@@ -13,7 +13,7 @@ services:
       timeout: 3s
       retries: 5
     networks:
-      - net-db
+      - chat_db_net
 
   # Local Postgres backing Hospital-MP. Schema + seed are applied on first
   # boot via /docker-entrypoint-initdb.d (Postgres convention). Subsequent
@@ -37,14 +37,10 @@ services:
       timeout: 5s
       retries: 10
     networks:
-      - net-db
+      - hospital_db_net
 
-  # ---------------------------------------------------------------------------
-  # Local Postgres for the Tenant service. Mirrors the Railway `tenant-postgres`
-  # build at scripts/data-stores/tenant-postgres.Dockerfile: applies
-  # Tenant/sql/init_schema.sql and scripts/data-stores/tenant-seed.sql exactly
-  # once against an empty volume. Drop the volume to re-seed.
-  # ---------------------------------------------------------------------------
+  # Local Postgres for the Tenant service. Schema is applied via tenant-migrate
+  # (golang-migrate) before the tenant service starts.
   tenant-postgres:
     image: postgres:16-alpine
     container_name: archsoft-tenant-postgres
@@ -55,8 +51,6 @@ services:
     expose:
       - "5432"
     volumes:
-      # Schema is applied by the tenant-migrate service (golang-migrate);
-      # Tenant main uses migrations, not a baked init script.
       - tenant-postgres-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${TENANT_DB_USER:-tenant} -d ${TENANT_DB_NAME:-tenant}"]
@@ -64,10 +58,10 @@ services:
       timeout: 5s
       retries: 10
     networks:
-      - net-db
+      - tenant_db_net
 
-  # One-shot: applies Tenant's global schema migrations to tenant-postgres
-  # before the tenant service starts. Exits 0 when done.
+  # One-shot: applies Tenant's global schema migrations before the tenant
+  # service starts. Exits 0 when done.
   tenant-migrate:
     image: migrate/migrate:v4.18.1
     container_name: archsoft-tenant-migrate
@@ -82,11 +76,9 @@ services:
         condition: service_healthy
     restart: on-failure
     networks:
-      - net-db
+      - tenant_db_net
 
-  # Local Mongo dedicated to the email audit service. conversation-chat
-  # still talks to hosted Atlas via MONGO_URI; this one is intentionally
-  # in-cluster so the audit trail stays self-contained for the demo.
+  # Local Mongo dedicated to the email audit service.
   email-mongo:
     image: mongo:7
     container_name: archsoft-email-mongo
@@ -101,11 +93,27 @@ services:
       retries: 5
       start_period: 15s
     networks:
-      - net-db
+      - email_net
+      - compliance_db_net
+
+  # Local MongoDB for conversation-chat sessions + history.
+  conversation-mongo:
+    image: mongo:7
+    container_name: archsoft-conversation-mongo
+    expose:
+      - "27017"
+    volumes:
+      - conversation-mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - chat_db_net
 
   # Message broker — RabbitMQ with management UI.
-  # Built from UN_message_broker_mb which pre-declares chat_requests +
-  # chat_results queues via definitions.json.
   rabbitmq:
     build:
       context: ./UN_message_broker_mb
@@ -120,7 +128,7 @@ services:
       retries: 5
       start_period: 30s
     networks:
-      - net-db
+      - orch_net
 
   # ---------------------------------------------------------------------------
   # Application services
@@ -130,13 +138,9 @@ services:
       context: ./Tenant
     container_name: archsoft-tenant
     environment:
-      # DATABASE_URL defaults to the local tenant-postgres container so a
-      # fresh `docker compose up` works without secrets. Override in .env
-      # to point at Supabase or a managed Postgres.
       DATABASE_URL: ${DATABASE_URL:-postgres://${TENANT_DB_USER:-tenant}:${TENANT_DB_PASSWORD:-tenant}@tenant-postgres:5432/${TENANT_DB_NAME:-tenant}?sslmode=disable}
       JWT_SECRET: ${JWT_SECRET}
       GIN_MODE: release
-      # Shared secret with the orchestrator for /api/v1/internal/* calls.
       INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
     ports:
       - "8080:8080"
@@ -152,8 +156,9 @@ services:
       retries: 5
       start_period: 20s
     networks:
-      - net-tenant
-      - net-db
+      - orch_net
+      - tenant_net
+      - tenant_db_net
 
   hospital-mock:
     build:
@@ -169,8 +174,8 @@ services:
       hospital-postgres:
         condition: service_healthy
     networks:
-      - net-orchestrator
-      - net-db
+      - orch_net
+      - hospital_db_net
 
   conversation-chat:
     build:
@@ -208,29 +213,8 @@ services:
       conversation-mongo:
         condition: service_healthy
     networks:
-      - net-orchestrator
-      - net-db
-
-  # Local MongoDB for conversation-chat sessions + history. Replaces the
-  # Atlas dependency for local testing (same role as conversation-mongo
-  # on Railway). Drop the conversation-mongo-data volume to re-seed.
-  conversation-mongo:
-    image: mongo:7
-    container_name: archsoft-conversation-mongo
-    expose:
-      - "27017"
-    volumes:
-      - conversation-mongo-data:/data/db
-    healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
-    networks:
-      - net-orchestrator
-      - net-db
-      - net-tenant
+      - orch_net
+      - chat_db_net
 
   agent-runtime:
     build:
@@ -253,8 +237,7 @@ services:
       rabbitmq:
         condition: service_healthy
     networks:
-      - net-orchestrator
-      - net-db
+      - orch_net
 
   chat-orch:
     build:
@@ -269,9 +252,6 @@ services:
       HOSPITAL_MOCK_URL: "http://hospital-mock:8080"
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_DEFAULT_TENANT_ID: ${TELEGRAM_DEFAULT_TENANT_ID:-demo-tenant}
-      # Twilio voice channel (P2-P3, not yet wired). Leave empty to disable.
-      # Account SID + Auth Token are sufficient for the REST API; API Key
-      # SID/Secret are required to sign Access Tokens for client SDKs.
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
       TWILIO_API_KEY_SID: ${TWILIO_API_KEY_SID:-}
@@ -298,27 +278,20 @@ services:
       - conversation-chat
       - hospital-mock
     networks:
-      - net-orchestrator
-      - net-tenant
-      - net-compliance
+      - public_net
+      - orch_net
+      - compliance_net
 
   frontend:
     build:
       context: ./FrontEnd
       args:
-        # Vite inlines these at build time. The frontend nginx now reverse-
-        # proxies every API path back to the right backend (see
-        # FrontEnd/nginx.conf), so the browser stays on a single origin and
-        # the bundle uses relative URLs by default. Override here only for
-        # builds that need to hit non-same-origin backends (staging without
-        # the gateway, LAN demos pointing the bundle at a separate API host).
         VITE_TENANT_API_URL: ${VITE_TENANT_API_URL-}
         VITE_ORCH_API_URL: ${VITE_ORCH_API_URL-}
         VITE_METRICAS_API_URL: ${VITE_METRICAS_API_URL-}
         VITE_CHAT_API_URL: ${VITE_CHAT_API_URL:-/api/v1}
     container_name: archsoft-frontend
     ports:
-      # The Next.js standalone server listens on 3000 (was nginx :80).
       - "3000:3000"
     depends_on:
       tenant:
@@ -330,16 +303,13 @@ services:
       compliance:
         condition: service_healthy
     networks:
-      - net-public
-      - net-tenant
-      - net-compliance
+      - public_net
+      - orch_net
+      - tenant_net
+      - compliance_net
 
   # ---------------------------------------------------------------------------
-  # Compliance & Metrics API (Python/FastAPI) — back-compat for the old
-  # Metricas wire contract (/conversation/chat, /feedback/csat, /stats/kpis,
-  # /stats/timeseries) plus new audit endpoints (/v1/event, /v1/feedback).
-  # Audit log is persisted to the local email-mongo container by default;
-  # override MONGO_URI_COMPLIANCE in the umbrella .env to point elsewhere.
+  # Compliance & Metrics API (Python/FastAPI)
   # ---------------------------------------------------------------------------
   compliance:
     build:
@@ -361,8 +331,8 @@ services:
       email-mongo:
         condition: service_healthy
     networks:
-      - net-compliance
-      - net-db
+      - compliance_net
+      - compliance_db_net
 
   # ---------------------------------------------------------------------------
   # Email dispatch + audit trail (Java/Spring Boot, SendGrid + local Mongo).
@@ -399,14 +369,11 @@ services:
       email-mongo:
         condition: service_healthy
     networks:
-      - net-compliance
-      - net-db
+      - email_net
+      - tenant_net
 
   # ---------------------------------------------------------------------------
-  # Grafana — observability dashboards. Empty out of the box; configure
-  # data sources via the UI (Compliance JSON via the Infinity plugin,
-  # RabbitMQ exporter at :15692, etc.). Persistent state in the
-  # `grafana-data` named volume.
+  # Grafana — observability dashboards.
   # ---------------------------------------------------------------------------
   grafana:
     image: grafana/grafana-oss:11.6.0
@@ -427,19 +394,38 @@ services:
       retries: 5
       start_period: 30s
     networks:
-      - net-public
-      - net-compliance
+      - public_net
+      - compliance_net
 
 networks:
-  net-public:
+  # Public zone — receives external traffic
+  public_net:
     driver: bridge
-  net-orchestrator:
+  # Orchestration sub-zone — main chat flow
+  orch_net:
     driver: bridge
-  net-tenant:
+  # Tenant support zone — source of truth for auth/tenants
+  tenant_net:
     driver: bridge
-  net-compliance:
+  # Audit and traceability zone
+  compliance_net:
     driver: bridge
-  net-db:
+  # Authentication sub-zone
+  auth_net:
+    driver: bridge
+  # Email service zone
+  email_net:
+    driver: bridge
+  # Exclusive networks per service <-> DB pair (least privilege)
+  tenant_db_net:
+    driver: bridge
+  chat_db_net:
+    driver: bridge
+  hospital_db_net:
+    driver: bridge
+  compliance_db_net:
+    driver: bridge
+  auth_db_net:
     driver: bridge
 
 volumes:
