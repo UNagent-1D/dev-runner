@@ -32,6 +32,7 @@ BACKEND_ORCH       = "https://chat-orch-dev.up.railway.app"
 BACKEND_TENANT     = "https://tenant-dev-07ad.up.railway.app"
 BACKEND_CHAT       = "https://conversation-chat-dev.up.railway.app"
 BACKEND_COMPLIANCE = "https://compliance-dev-8757.up.railway.app"
+BACKEND_USER_AUTH  = "https://user-auth-dev.up.railway.app"
 
 # ---------------------------------------------------------------------------
 # prod — bound to <apex>. Worker proxies to Railway prod backends.
@@ -45,3 +46,4 @@ BACKEND_ORCH       = "https://chat-orch-production-29b4.up.railway.app"
 BACKEND_TENANT     = "https://tenant-production-2017.up.railway.app"
 BACKEND_CHAT       = "https://conversation-chat-production-e5aa.up.railway.app"
 BACKEND_COMPLIANCE = "https://compliance-production-7465.up.railway.app"
+BACKEND_USER_AUTH  = "https://user-auth-production-81c6.up.railway.app"

@@ -13,7 +13,7 @@ services:
       timeout: 3s
       retries: 5
     networks:
-      - archsoft
+      - chat_db_net
 
   # Local Postgres backing Hospital-MP. Schema + seed are applied on first
   # boot via /docker-entrypoint-initdb.d (Postgres convention). Subsequent
@@ -37,11 +37,106 @@ services:
       timeout: 5s
       retries: 10
     networks:
-      - archsoft
+      - hospital_db_net
 
-  # Local Mongo dedicated to the email audit service. conversation-chat
-  # still talks to hosted Atlas via MONGO_URI; this one is intentionally
-  # in-cluster so the audit trail stays self-contained for the demo.
+  # Local Postgres for the Tenant service. Schema is applied via tenant-migrate
+  # (golang-migrate) before the tenant service starts.
+  tenant-postgres:
+    image: postgres:16-alpine
+    container_name: archsoft-tenant-postgres
+    environment:
+      POSTGRES_DB: ${TENANT_DB_NAME:-tenant}
+      POSTGRES_USER: ${TENANT_DB_USER:-tenant}
+      POSTGRES_PASSWORD: ${TENANT_DB_PASSWORD:-tenant}
+    expose:
+      - "5432"
+    volumes:
+      - tenant-postgres-data:/var/lib/postgresql/data
+      - ./scripts/data-stores/user-auth-init.sql:/docker-entrypoint-initdb.d/10_user_auth.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TENANT_DB_USER:-tenant} -d ${TENANT_DB_NAME:-tenant}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - tenant_db_net
+
+  # One-shot: applies Tenant's global schema migrations before the tenant
+  # service starts. Exits 0 when done.
+  tenant-migrate:
+    image: migrate/migrate:v4.18.1
+    container_name: archsoft-tenant-migrate
+    volumes:
+      - ./Tenant/migrations/global:/migrations:ro
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://${TENANT_DB_USER:-tenant}:${TENANT_DB_PASSWORD:-tenant}@tenant-postgres:5432/${TENANT_DB_NAME:-tenant}?sslmode=disable"
+      - "up"
+    depends_on:
+      tenant-postgres:
+        condition: service_healthy
+    restart: on-failure
+    networks:
+      - tenant_db_net
+
+  # One-shot: seeds an app_admin row (admin@demo.com / demo1234) after the
+  # global migrations finish. Idempotent — exits 0 if the admin exists.
+  tenant-seed:
+    build:
+      context: ./Tenant
+    container_name: archsoft-tenant-seed
+    command: ["/app/seed"]
+    environment:
+      DATABASE_URL: postgres://${TENANT_DB_USER:-tenant}:${TENANT_DB_PASSWORD:-tenant}@tenant-postgres:5432/${TENANT_DB_NAME:-tenant}?sslmode=disable
+      SEED_EMAIL: ${SEED_EMAIL:-admin@demo.com}
+      SEED_PASSWORD: ${SEED_PASSWORD:-demo1234}
+      GODEBUG: netdns=go
+    depends_on:
+      tenant-postgres:
+        condition: service_healthy
+      tenant-migrate:
+        condition: service_completed_successfully
+    restart: "no"
+    networks:
+      - tenant_db_net
+
+  # User-Auth — OTP-via-email microservice in front of Tenant's user CRUD.
+  # FrontEnd /signup + Telegram pre-registration call it. Owns its own
+  # database (`user_auth`) on the shared tenant-postgres instance,
+  # bootstrapped via the user-auth-init.sql mount on tenant-postgres above.
+  user-auth:
+    build:
+      context: ./User-Auth
+    container_name: archsoft-user-auth
+    environment:
+      DB_URL: postgresql://${TENANT_DB_USER:-tenant}:${TENANT_DB_PASSWORD:-tenant}@tenant-postgres:5432/user_auth?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET}
+      EMAIL_SERVICE_URL: http://email-send:8080/api/v1/emails
+      AUTH_FROM_EMAIL: ${EMAIL_FROM_DEFAULT:-noreply@unagent.local}
+      # Tenant exchange after verify-code: hands the verified identity to
+      # Tenant via /internal/auth/upsert-from-otp to mint the canonical JWT.
+      TENANT_INTERNAL_URL: http://tenant:8080
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
+      PORT: "8080"
+      GODEBUG: netdns=go
+    ports:
+      - "8093:8080"
+    depends_on:
+      tenant-postgres:
+        condition: service_healthy
+      email-send:
+        condition: service_started
+    networks:
+      # auth zone (chat-orch + frontend reach it via orch_net for /verify-otp)
+      - orch_net
+      # talks to tenant (tenant_net) for upsert-from-otp
+      - tenant_net
+      # owns the user_auth DB on tenant-postgres (tenant_db_net)
+      - tenant_db_net
+      # delivers OTP codes via email-send
+      - email_net
+
+  # Local Mongo dedicated to the email audit service.
   email-mongo:
     image: mongo:7
     container_name: archsoft-email-mongo
@@ -56,11 +151,27 @@ services:
       retries: 5
       start_period: 15s
     networks:
-      - archsoft
+      - email_net
+      - compliance_db_net
+
+  # Local MongoDB for conversation-chat sessions + history.
+  conversation-mongo:
+    image: mongo:7
+    container_name: archsoft-conversation-mongo
+    expose:
+      - "27017"
+    volumes:
+      - conversation-mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - chat_db_net
 
   # Message broker — RabbitMQ with management UI.
-  # Built from UN_message_broker_mb which pre-declares chat_requests +
-  # chat_results queues via definitions.json.
   rabbitmq:
     build:
       context: ./UN_message_broker_mb
@@ -75,7 +186,7 @@ services:
       retries: 5
       start_period: 30s
     networks:
-      - archsoft
+      - orch_net
 
   # ---------------------------------------------------------------------------
   # Application services
@@ -85,19 +196,27 @@ services:
       context: ./Tenant
     container_name: archsoft-tenant
     environment:
-      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_URL: ${DATABASE_URL:-postgres://${TENANT_DB_USER:-tenant}:${TENANT_DB_PASSWORD:-tenant}@tenant-postgres:5432/${TENANT_DB_NAME:-tenant}?sslmode=disable}
       JWT_SECRET: ${JWT_SECRET}
       GIN_MODE: release
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
     ports:
       - "8080:8080"
+    depends_on:
+      tenant-postgres:
+        condition: service_healthy
+      tenant-migrate:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/v1/health"]
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 20s
     networks:
-      - archsoft
+      - orch_net
+      - tenant_net
+      - tenant_db_net
 
   hospital-mock:
     build:
@@ -113,7 +232,8 @@ services:
       hospital-postgres:
         condition: service_healthy
     networks:
-      - archsoft
+      - orch_net
+      - hospital_db_net
 
   conversation-chat:
     build:
@@ -124,7 +244,7 @@ services:
       APP_VERSION: "1.0.0"
       GIN_MODE: release
       REDIS_URL: "redis://redis:6379/1"
-      MONGO_URI: ${MONGO_URI}
+      MONGO_URI: ${MONGO_URI:-mongodb://conversation-mongo:27017}
       MONGO_DB: ${MONGO_DB:-conversatory}
       ACR_SERVICE_URL: "http://agent-runtime:3100"
       TENANT_SERVICE_URL: "http://agent-runtime:3100"
@@ -148,8 +268,11 @@ services:
         condition: service_started
       rabbitmq:
         condition: service_healthy
+      conversation-mongo:
+        condition: service_healthy
     networks:
-      - archsoft
+      - orch_net
+      - chat_db_net
 
   agent-runtime:
     build:
@@ -161,6 +284,10 @@ services:
       HOSPITAL_MOCK_URL: "http://hospital-mock:8080"
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
       OPENAI_DEFAULT_MODEL: ${OPENAI_DEFAULT_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
+      # Resolves per-tenant agent config from Tenant /internal/.../profiles/active.
+      # Falls back to hardcoded hospitalProfile if Tenant returns nothing.
+      TENANT_INTERNAL_URL: http://tenant:8080
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
       RABBITMQ_URL: "amqp://rabbitmq:5672"
       BACKEND_CHANNEL_KEY: ${BACKEND_CHANNEL_KEY:-}
       BACKEND_CHANNEL_ENABLED: ${BACKEND_CHANNEL_ENABLED:-false}
@@ -172,7 +299,7 @@ services:
       rabbitmq:
         condition: service_healthy
     networks:
-      - archsoft
+      - orch_net
 
   chat-orch:
     build:
@@ -187,9 +314,11 @@ services:
       HOSPITAL_MOCK_URL: "http://hospital-mock:8080"
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_DEFAULT_TENANT_ID: ${TELEGRAM_DEFAULT_TENANT_ID:-demo-tenant}
-      # Twilio voice channel (P2-P3, not yet wired). Leave empty to disable.
-      # Account SID + Auth Token are sufficient for the REST API; API Key
-      # SID/Secret are required to sign Access Tokens for client SDKs.
+      TELEGRAM_DEFAULT_TENANT_SLUG: ${TELEGRAM_DEFAULT_TENANT_SLUG:-demo-hospital}
+      # When set, every Telegram message goes through the OTP gate (email →
+      # 6-digit code) before reaching the LLM. Leave unset to disable.
+      USER_AUTH_URL: ${USER_AUTH_URL:-http://user-auth:8080}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
       TWILIO_API_KEY_SID: ${TWILIO_API_KEY_SID:-}
@@ -203,6 +332,10 @@ services:
       AGENT_RUNTIME_URL: "http://agent-runtime:3100"
       BACKEND_CHANNEL_KEY: ${BACKEND_CHANNEL_KEY:-}
       BACKEND_CHANNEL_ENABLED: ${BACKEND_CHANNEL_ENABLED:-false}
+      RATE_LIMIT_CHAT_BURST: ${RATE_LIMIT_CHAT_BURST:-20}
+      RATE_LIMIT_CHAT_PER_SEC: ${RATE_LIMIT_CHAT_PER_SEC:-1.0}
+      RATE_LIMIT_FEEDBACK_BURST: ${RATE_LIMIT_FEEDBACK_BURST:-10}
+      RATE_LIMIT_FEEDBACK_PER_SEC: ${RATE_LIMIT_FEEDBACK_PER_SEC:-0.5}
       RUST_LOG: "chat_orch=info,tower_http=info"
       LOG_FORMAT: "json"
     ports:
@@ -212,25 +345,21 @@ services:
       - conversation-chat
       - hospital-mock
     networks:
-      - archsoft
+      - public_net
+      - orch_net
+      - compliance_net
 
   frontend:
     build:
       context: ./FrontEnd
       args:
-        # Vite inlines these at build time. The frontend nginx now reverse-
-        # proxies every API path back to the right backend (see
-        # FrontEnd/nginx.conf), so the browser stays on a single origin and
-        # the bundle uses relative URLs by default. Override here only for
-        # builds that need to hit non-same-origin backends (staging without
-        # the gateway, LAN demos pointing the bundle at a separate API host).
         VITE_TENANT_API_URL: ${VITE_TENANT_API_URL-}
         VITE_ORCH_API_URL: ${VITE_ORCH_API_URL-}
         VITE_METRICAS_API_URL: ${VITE_METRICAS_API_URL-}
         VITE_CHAT_API_URL: ${VITE_CHAT_API_URL:-/api/v1}
     container_name: archsoft-frontend
     ports:
-      - "3000:80"
+      - "3000:3000"
     depends_on:
       tenant:
         condition: service_healthy
@@ -241,14 +370,13 @@ services:
       compliance:
         condition: service_healthy
     networks:
-      - archsoft
+      - public_net
+      - orch_net
+      - tenant_net
+      - compliance_net
 
   # ---------------------------------------------------------------------------
-  # Compliance & Metrics API (Python/FastAPI) — back-compat for the old
-  # Metricas wire contract (/conversation/chat, /feedback/csat, /stats/kpis,
-  # /stats/timeseries) plus new audit endpoints (/v1/event, /v1/feedback).
-  # Audit log is persisted to the local email-mongo container by default;
-  # override MONGO_URI_COMPLIANCE in the umbrella .env to point elsewhere.
+  # Compliance & Metrics API (Python/FastAPI)
   # ---------------------------------------------------------------------------
   compliance:
     build:
@@ -270,7 +398,8 @@ services:
       email-mongo:
         condition: service_healthy
     networks:
-      - archsoft
+      - compliance_net
+      - compliance_db_net
 
   # ---------------------------------------------------------------------------
   # Email dispatch + audit trail (Java/Spring Boot, SendGrid + local Mongo).
@@ -307,13 +436,11 @@ services:
       email-mongo:
         condition: service_healthy
     networks:
-      - archsoft
+      - email_net
+      - tenant_net
 
   # ---------------------------------------------------------------------------
-  # Grafana — observability dashboards. Empty out of the box; configure
-  # data sources via the UI (Compliance JSON via the Infinity plugin,
-  # RabbitMQ exporter at :15692, etc.). Persistent state in the
-  # `grafana-data` named volume.
+  # Grafana — observability dashboards.
   # ---------------------------------------------------------------------------
   grafana:
     image: grafana/grafana-oss:11.6.0
@@ -334,13 +461,43 @@ services:
       retries: 5
       start_period: 30s
     networks:
-      - archsoft
+      - public_net
+      - compliance_net
 
 networks:
-  archsoft:
+  # Public zone — receives external traffic
+  public_net:
+    driver: bridge
+  # Orchestration sub-zone — main chat flow
+  orch_net:
+    driver: bridge
+  # Tenant support zone — source of truth for auth/tenants
+  tenant_net:
+    driver: bridge
+  # Audit and traceability zone
+  compliance_net:
+    driver: bridge
+  # Authentication sub-zone
+  auth_net:
+    driver: bridge
+  # Email service zone
+  email_net:
+    driver: bridge
+  # Exclusive networks per service <-> DB pair (least privilege)
+  tenant_db_net:
+    driver: bridge
+  chat_db_net:
+    driver: bridge
+  hospital_db_net:
+    driver: bridge
+  compliance_db_net:
+    driver: bridge
+  auth_db_net:
     driver: bridge
 
 volumes:
   email-mongo-data:
+  conversation-mongo-data:
   hospital-postgres-data:
+  tenant-postgres-data:
   grafana-data:

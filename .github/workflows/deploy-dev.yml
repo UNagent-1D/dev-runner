@@ -32,6 +32,7 @@ jobs:
           - hospital-mock
           - compliance
           - email-send
+          - user-auth
           - rabbitmq
     env:
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_DEV }}
@@ -50,8 +51,10 @@ jobs:
         run: railway up --service ${{ matrix.service }} --environment dev --detach
 
   # ---------------------------------------------------------------------------
-  # Cloudflare Worker — single deploy. Builds the Vite SPA, then uploads
-  # both the bundle and the static assets via wrangler.
+  # Cloudflare Worker — builds the Next.js static export and uploads the
+  # bundle via wrangler. FrontEnd now uses output:'export' + distDir:'dist'
+  # so `next build` writes the static SPA to FrontEnd/dist/, which is what
+  # wrangler.toml's [assets] binding points at.
   # ---------------------------------------------------------------------------
   deploy-worker:
     name: Cloudflare Worker
@@ -80,7 +83,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: FrontEnd/pnpm-lock.yaml
 
-      - name: Build FrontEnd (Vite via pnpm)
+      - name: Build FrontEnd (Next.js static export)
         run: |
           cd FrontEnd
           pnpm install --frozen-lockfile
@@ -123,9 +126,10 @@ jobs:
           # (Go/Gin) only answers under /api/v1/health; the others expose /health.
           for entry in \
             "${{ vars.RAILWAY_DEV_ORCH_URL }}|/health" \
-            "${{ vars.RAILWAY_DEV_TENANT_URL }}|/health" \
+            "${{ vars.RAILWAY_DEV_TENANT_URL }}|/api/v1/health" \
             "${{ vars.RAILWAY_DEV_CHAT_URL }}|/api/v1/health" \
-            "${{ vars.RAILWAY_DEV_COMPLIANCE_URL }}|/health"; do
+            "${{ vars.RAILWAY_DEV_COMPLIANCE_URL }}|/health" \
+            "${{ vars.RAILWAY_DEV_USER_AUTH_URL }}|/health"; do
             base="${entry%%|*}"; path="${entry##*|}"
             [ -z "$base" ] && continue
             url="${base}${path}"

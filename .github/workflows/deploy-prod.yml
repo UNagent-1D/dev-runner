@@ -81,6 +81,7 @@ jobs:
           - hospital-mock
           - compliance
           - email-send
+          - user-auth
           - rabbitmq
     env:
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_PROD }}
@@ -126,7 +127,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: FrontEnd/pnpm-lock.yaml
 
-      - name: Build FrontEnd (Vite via pnpm)
+      - name: Build FrontEnd (Next.js static export)
         run: |
           cd FrontEnd
           pnpm install --frozen-lockfile
@@ -161,9 +162,10 @@ jobs:
           # conversation-chat (Go/Gin) only answers /api/v1/health.
           for entry in \
             "${{ vars.RAILWAY_PROD_ORCH_URL }}|/health" \
-            "${{ vars.RAILWAY_PROD_TENANT_URL }}|/health" \
+            "${{ vars.RAILWAY_PROD_TENANT_URL }}|/api/v1/health" \
             "${{ vars.RAILWAY_PROD_CHAT_URL }}|/api/v1/health" \
-            "${{ vars.RAILWAY_PROD_COMPLIANCE_URL }}|/health"; do
+            "${{ vars.RAILWAY_PROD_COMPLIANCE_URL }}|/health" \
+            "${{ vars.RAILWAY_PROD_USER_AUTH_URL }}|/health"; do
             base="${entry%%|*}"; path="${entry##*|}"
             [ -z "$base" ] && continue
             url="${base}${path}"
