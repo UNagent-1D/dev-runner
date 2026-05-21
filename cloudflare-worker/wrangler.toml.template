@@ -32,6 +32,7 @@ BACKEND_ORCH       = "{{BACKEND_ORCH_DEV}}"
 BACKEND_TENANT     = "{{BACKEND_TENANT_DEV}}"
 BACKEND_CHAT       = "{{BACKEND_CHAT_DEV}}"
 BACKEND_COMPLIANCE = "{{BACKEND_COMPLIANCE_DEV}}"
+BACKEND_USER_AUTH  = "{{BACKEND_USER_AUTH_DEV}}"
 
 # ---------------------------------------------------------------------------
 # prod — bound to <apex>. Worker proxies to Railway prod backends.
@@ -45,3 +46,4 @@ BACKEND_ORCH       = "{{BACKEND_ORCH_PROD}}"
 BACKEND_TENANT     = "{{BACKEND_TENANT_PROD}}"
 BACKEND_CHAT       = "{{BACKEND_CHAT_PROD}}"
 BACKEND_COMPLIANCE = "{{BACKEND_COMPLIANCE_PROD}}"
+BACKEND_USER_AUTH  = "{{BACKEND_USER_AUTH_PROD}}"
