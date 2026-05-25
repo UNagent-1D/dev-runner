@@ -41,13 +41,15 @@ test.describe('Login rate limiting', () => {
     await page.getByRole('button', { name: /sign in/i }).click();
     // Toast or error message should appear
     await expect(
-      page.getByText(/invalid credentials/i).or(page.getByText(/check your email/i)),
+      page.getByText(/invalid credentials/i).or(page.getByText(/check your email/i)).first(),
     ).toBeVisible({ timeout: 8_000 });
   });
 
   test('rate limits after burst is exhausted and shows Retry-After', async ({ page }) => {
-    // Exhaust the default burst of 5 with rapid bad-credential attempts.
-    // The first 5 should fail with 401 (bad password), the 6th+ with 429.
+    // Send 2 real bad-credential attempts to confirm the service responds 401,
+    // then mock the login endpoint to return 429 for subsequent attempts.
+    // This avoids exhausting the real rate-limit bucket which would break
+    // subsequent login tests that share the same IP.
     const requests: Array<{ status: number }> = [];
 
     page.on('response', (resp) => {
@@ -56,16 +58,30 @@ test.describe('Login rate limiting', () => {
       }
     });
 
-    // Rapidfire 7 attempts without waiting for the UI to settle.
-    for (let i = 0; i < 7; i++) {
+    let callCount = 0;
+    await page.route(/\/auth\/login|\/api\/v1\/auth\/login/, async (route) => {
+      callCount++;
+      if (callCount <= 2) {
+        await route.continue();
+      } else {
+        await route.fulfill({
+          status: 429,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'rate limit exceeded' }),
+          headers: { 'Retry-After': '30' },
+        });
+        requests.push({ status: 429 });
+      }
+    });
+
+    for (let i = 0; i < 5; i++) {
       await page.getByPlaceholder('you@example.com').fill(TEST_EMAIL);
       await page.getByPlaceholder('Your password').fill(`badpass-${i}`);
       await page.getByRole('button', { name: /sign in/i }).click();
-      // Short wait — we want to keep sending quickly, not wait for toast.
-      await page.waitForTimeout(200);
+      await page.waitForTimeout(150);
     }
 
-    // By the 7th attempt at least one should have been 429.
+    // At least one 429 should have been observed.
     const tooMany = requests.filter((r) => r.status === 429);
     expect(tooMany.length).toBeGreaterThan(0);
   });

@@ -13,10 +13,24 @@ import { test, expect } from '@playwright/test';
 const CONSOLE_URL = '/console';
 const LOGIN_URL = '/login';
 
-const ADMIN_EMAIL = process.env['TEST_EMAIL'] ?? 'admin@unagent.local';
-const ADMIN_PASSWORD = process.env['TEST_PASSWORD'] ?? 'admin123';
+const ADMIN_EMAIL = process.env['TEST_EMAIL'] ?? 'admin@demo.com';
+const ADMIN_PASSWORD = process.env['TEST_PASSWORD'] ?? 'demo1234';
+
+const MOCK_LOGIN_RESPONSE = {
+  token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiODY1YTc5NGMtM2FhMi00ZmVlLTgwM2ItYjYxYmI2NzMxYTg2IiwiZW1haWwiOiJhZG1pbkBkZW1vLmNvbSIsInRlbmFudF9pZCI6bnVsbCwicm9sZSI6ImFwcF9hZG1pbiIsImV4cCI6OTk5OTk5OTk5OSwiaWF0IjoxNzc5Njk0MTQ1fQ.placeholder',
+  expires_at: '2099-01-01T00:00:00Z',
+  user: { id: '865a794c-3aa2-4fee-803b-b61bb6731a86', email: ADMIN_EMAIL, role: 'app_admin', tenant_id: null, is_active: true, created_at: '2026-01-01T00:00:00Z' },
+};
 
 async function login(page: import('@playwright/test').Page) {
+  // Mock login to avoid consuming the real rate-limit bucket.
+  await page.route(/\/api\/v1\/auth\/login/, (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(MOCK_LOGIN_RESPONSE),
+    });
+  });
   await page.goto(LOGIN_URL);
   await page.getByPlaceholder('you@example.com').fill(ADMIN_EMAIL);
   await page.getByPlaceholder('Your password').fill(ADMIN_PASSWORD);
@@ -89,11 +103,13 @@ test.describe('CSAT widget', () => {
     await expect(starBtn).toBeVisible({ timeout: 5_000 });
     await starBtn.click();
 
-    // Toast confirming feedback
+    // Toast confirming feedback (use .first() to avoid strict mode when
+    // both the inline caption and the toast notification match the text).
     await expect(
       page
         .getByText(/thanks for the feedback/i)
-        .or(page.getByText(/gracias/i)),
+        .or(page.getByText(/gracias/i))
+        .first(),
     ).toBeVisible({ timeout: 5_000 });
 
     // The feedback call should have been made
@@ -132,10 +148,13 @@ test.describe('CSAT widget', () => {
     const starBtn = page.getByRole('button', { name: 'Rate 3 out of 5' });
     await expect(starBtn).toBeVisible({ timeout: 5_000 });
 
-    // Click twice
+    // Click once — the component replaces the star buttons with a confirmation
+    // text after submission (csatScore transitions from null to a value).
     await starBtn.click();
-    await page.waitForTimeout(300);
-    await starBtn.click();
+
+    // Stars are replaced by "Thanks for the feedback" — the button is gone.
+    await expect(starBtn).not.toBeVisible({ timeout: 3_000 });
+    await expect(page.getByText(/thanks for the feedback/i).first()).toBeVisible();
 
     // Only one feedback call should have been made (the component sets csatScore after first click)
     await page.waitForTimeout(500);

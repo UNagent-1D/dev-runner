@@ -15,11 +15,27 @@ const CONSOLE_URL = '/console';
 const LOGIN_URL = '/login';
 
 // Credentials that exist in the seed data.
-const ADMIN_EMAIL = process.env['TEST_EMAIL'] ?? 'admin@unagent.local';
-const ADMIN_PASSWORD = process.env['TEST_PASSWORD'] ?? 'admin123';
+const ADMIN_EMAIL = process.env['TEST_EMAIL'] ?? 'admin@demo.com';
+const ADMIN_PASSWORD = process.env['TEST_PASSWORD'] ?? 'demo1234';
 const TENANT_ID = process.env['TEST_TENANT_ID'] ?? 'demo-tenant';
 
+const MOCK_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiODY1YTc5NGMtM2FhMi00ZmVlLTgwM2ItYjYxYmI2NzMxYTg2IiwiZW1haWwiOiJhZG1pbkBkZW1vLmNvbSIsInRlbmFudF9pZCI6bnVsbCwicm9sZSI6ImFwcF9hZG1pbiIsImV4cCI6OTk5OTk5OTk5OSwiaWF0IjoxNzc5Njk0MTQ1fQ.placeholder';
+const MOCK_LOGIN_RESPONSE = {
+  token: MOCK_TOKEN,
+  expires_at: '2099-01-01T00:00:00Z',
+  user: { id: '865a794c-3aa2-4fee-803b-b61bb6731a86', email: ADMIN_EMAIL, role: 'app_admin', tenant_id: null, is_active: true, created_at: '2026-01-01T00:00:00Z' },
+};
+
 async function login(page: import('@playwright/test').Page) {
+  // Mock the login endpoint to avoid hitting the real rate limiter.
+  // This keeps auth-rate-limit.test.ts as the sole consumer of the real bucket.
+  await page.route(/\/api\/v1\/auth\/login/, (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(MOCK_LOGIN_RESPONSE),
+    });
+  });
   await page.goto(LOGIN_URL);
   await page.getByPlaceholder('you@example.com').fill(ADMIN_EMAIL);
   await page.getByPlaceholder('Your password').fill(ADMIN_PASSWORD);
@@ -60,41 +76,50 @@ test.describe('Agent Console rate limiting', () => {
     await login(page);
     await page.goto(CONSOLE_URL);
 
-    // Intercept /v1/chat and short-circuit: return 429 for requests > 20.
-    // This avoids burning real LLM budget while verifying the UI path.
+    // Mock ALL chat requests to avoid real LLM calls.
+    // The first 2 return success (so the UI settles), the 3rd returns 429.
     let chatCallCount = 0;
-    await page.route('**/v1/chat', (route, request) => {
+    await page.route('**/v1/chat', (route) => {
       chatCallCount++;
-      if (chatCallCount > 20) {
+      if (chatCallCount >= 3) {
         route.fulfill({
           status: 429,
           contentType: 'application/json',
-          body: JSON.stringify({
-            error: 'rate limit exceeded',
-            retry_after_secs: 5,
-          }),
+          body: JSON.stringify({ error: 'rate limit exceeded', retry_after_secs: 5 }),
           headers: { 'Retry-After': '5' },
         });
       } else {
-        route.continue();
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            session_id: `sess-rl-${chatCallCount}`,
+            message: { text: 'ok' },
+          }),
+        });
       }
     });
 
     const input = page.getByRole('textbox');
     const sendBtn = page.getByRole('button', { name: /send/i });
 
-    // Flood 22 messages (the first 20 pass through, 21st onwards are 429).
-    for (let i = 0; i <= 21; i++) {
-      if (await sendBtn.isEnabled()) {
-        await input.fill(`msg ${i}`);
-        await sendBtn.click({ force: true });
-        await page.waitForTimeout(50);
-      }
+    // Send 3 messages rapidly; 3rd triggers 429 via the mock.
+    for (let i = 0; i < 3; i++) {
+      await expect(sendBtn).toBeEnabled({ timeout: 5_000 });
+      await input.fill(`msg ${i}`);
+      await sendBtn.click();
+      // Wait for response before next send (so the button re-enables).
+      await page.waitForTimeout(300);
     }
 
-    // The rate-limit UI message should appear
+    // The rate-limit error should appear either as a toast or as a bot
+    // chat message. The in-page message may be browser-translated.
     await expect(
-      page.getByText(/too many requests/i).or(page.getByText(/wait \d+s/i)),
+      page.getByText(/too many requests/i)
+        .or(page.getByText(/wait \d+s/i))
+        .or(page.getByText(/demasiadas solicitudes/i))
+        .or(page.getByText(/espere \d+/i))
+        .first(),
     ).toBeVisible({ timeout: 5_000 });
   });
 });
