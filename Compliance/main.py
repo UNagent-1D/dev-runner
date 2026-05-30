@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 import motor.motor_asyncio
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -19,6 +19,14 @@ secure_channel.init_from_env()
 
 MONGO_URI = os.getenv("MONGO_URI") or os.getenv("MONGO_URL")
 MONGO_DB = os.getenv("MONGO_DB_COMPLIANCE", "UN_compliance_db")
+# When set, all write endpoints (/v1/event, /conversation/chat, /feedback/*)
+# require X-Internal-Key to match. Leave unset to allow any caller (dev mode).
+_INTERNAL_KEY: Optional[str] = os.getenv("INTERNAL_API_KEY") or None
+
+
+def _require_internal_key(x_internal_key: Optional[str] = Header(default=None)) -> None:
+    if _INTERNAL_KEY and x_internal_key != _INTERNAL_KEY:
+        raise HTTPException(status_code=401, detail="missing or invalid X-Internal-Key")
 
 mongo_client: Optional[motor.motor_asyncio.AsyncIOMotorClient] = None
 audit_logs = None
@@ -274,6 +282,7 @@ async def legacy_chat(
     body: ChatRequest,
     background_tasks: BackgroundTasks,
     x_tenant_id: Optional[str] = Header(default=None, alias="X-Tenant-ID"),
+    _: None = Depends(_require_internal_key),
 ):
     if not x_tenant_id:
         raise HTTPException(status_code=400, detail="X-Tenant-ID header is required")
@@ -301,6 +310,7 @@ async def legacy_csat(
     body: CsatRequest,
     background_tasks: BackgroundTasks,
     x_tenant_id: Optional[str] = Header(default=None, alias="X-Tenant-ID"),
+    _: None = Depends(_require_internal_key),
 ):
     if not x_tenant_id:
         raise HTTPException(status_code=400, detail="X-Tenant-ID header is required")
@@ -384,13 +394,17 @@ async def get_timeseries(tenant_id: Optional[str] = None, days: int = 7):
 
 
 @app.post("/v1/feedback")
-async def submit_feedback_v1(data: FeedbackV1):
+async def submit_feedback_v1(data: FeedbackV1, _: None = Depends(_require_internal_key)):
     _record_csat(data.tenant_id, float(data.score))
     return {"status": "ok", "message": "Feedback recibido"}
 
 
 @app.post("/v1/event")
-async def register_event(log: ComplianceLog, background_tasks: BackgroundTasks):
+async def register_event(
+    log: ComplianceLog,
+    background_tasks: BackgroundTasks,
+    _: None = Depends(_require_internal_key),
+):
     log_dict = log.model_dump()
     background_tasks.add_task(_save_audit, log_dict)
     if log.action == "CHAT_STARTED":
