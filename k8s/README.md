@@ -63,6 +63,20 @@ make -C k8s verify     # prints proof of all 4 patterns
 - **Load balancer:** with `minikube tunnel` running, `conversation-chat-lb` and
   `frontend` get EXTERNAL-IPs. No-sudo fallback: `minikube service <svc> -n unagent --url`.
 
+## Troubleshooting
+
+- **Pods stuck `ContainerCreating`; coredns never ready; events show
+  `bridge CNI failed (add): iptables ... comment ... missing kernel module?`**
+  The host kernel can't load `xt_comment`, which minikube's bridge CNI needs to
+  program iptables. On Arch this usually means the kernel package was updated but
+  the machine is still running the *old* kernel, so `/lib/modules/$(uname -r)` is
+  missing modules (`modprobe xt_comment` → "not found", while
+  `CONFIG_NETFILTER_XT_MATCH_COMMENT=m`). **Reboot into the current kernel**, then
+  `sudo modprobe xt_comment` should succeed and `minikube start` will network pods.
+- **PVCs stuck `Pending` / storage-provisioner `Error: dial 10.96.0.1:443 i/o
+  timeout`**: the host is starved (high load / heavy swap). Free RAM or give
+  minikube fewer competing neighbors, then `minikube start`.
+
 ## Notes / known constraints
 
 - `metrics-server` and `minikube tunnel` are manual prerequisites; without them the
