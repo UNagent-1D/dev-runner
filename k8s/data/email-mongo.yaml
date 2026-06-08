@@ -34,7 +34,10 @@ spec:
     matchLabels: { app: email-mongo }
   template:
     metadata:
-      labels: { app: email-mongo }
+      # net-* labels mirror docker-compose networks (see network/networkpolicies.yaml).
+      # net-email covers peer replication (all 3 RS pods share it) + email-send/user-auth;
+      # net-compliance-db covers compliance.
+      labels: { app: email-mongo, net-email: "true", net-compliance-db: "true" }
     spec:
       terminationGracePeriodSeconds: 15
       containers:
@@ -80,7 +83,8 @@ spec:
   activeDeadlineSeconds: 600   # surface a stuck bootstrap as a failed Job, never hang forever
   template:
     metadata:
-      labels: { app: email-mongo-rs-init }
+      # net-email lets the bootstrap job reach the mongo RS pods on 27017
+      labels: { app: email-mongo-rs-init, net-email: "true" }
     spec:
       restartPolicy: OnFailure
       containers:

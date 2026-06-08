@@ -24,7 +24,8 @@ spec:
     matchLabels: { app: tenant-postgres }
   template:
     metadata:
-      labels: { app: tenant-postgres }
+      # net-* labels mirror docker-compose networks (see network/networkpolicies.yaml)
+      labels: { app: tenant-postgres, net-tenant-db: "true" }
     spec:
       containers:
         - name: postgres

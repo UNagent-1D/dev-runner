@@ -32,6 +32,11 @@ resources:
   - apps/user-auth.yaml
   - apps/grafana.yaml
   - apps/frontend.yaml
+  # network segmentation — mirrors the docker-compose "red" pattern. Listed last;
+  # NetworkPolicies are additive + order-independent, but keeping them after the
+  # workloads they reference reads cleanly. Requires a policy-enforcing CNI
+  # (Cilium — see Makefile `start`); kindnet/bridge silently ignores these.
+  - network/networkpolicies.yaml
 
 # Init SQL + migrations are sourced from the real repo files so they never drift
 # from what docker-compose mounts. Stable names (no hash suffix) so the volume

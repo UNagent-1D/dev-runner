@@ -2,7 +2,7 @@
 # Implements: MongoDB replication (email-mongo rs0), service discovery,
 # conversation-chat cluster+replication (HPA), and load balancers.
 #
-# Usage:  make start  build  deploy  secret  tunnel  status  verify  clean
+# Usage:  make start  build  deploy  secret  tunnel  status  verify  netcheck  clean
 # Run from the umbrella root:  make -C k8s <target>
 
 NS         := unagent
@@ -26,10 +26,25 @@ IMAGES := \
   rabbitmq:UN_message_broker_mb
 
 .PHONY: start
-start:   ## Start minikube (docker driver) + required addons
-	minikube start --driver=docker --cpus=4 --memory=8192 --disk-size=40g
+start:   ## Start minikube (docker driver) + Cilium CNI + required addons
+	# Cilium (eBPF) ENFORCES NetworkPolicy — the network segmentation in
+	# network/networkpolicies.yaml. minikube's default kindnet CNI does NOT, so
+	# policies would be silently ignored. The CNI is fixed at cluster creation:
+	# an existing kindnet profile must be deleted first (`minikube delete`), then
+	# rerun `make start` + `make build` (images live in minikube's daemon).
+	minikube start --driver=docker --cpus=4 --memory=8192 --disk-size=40g --cni=cilium
 	minikube addons enable metrics-server   # REQUIRED for the conversation-chat HPA
 	minikube addons enable default-storageclass
+	@echo ">> waiting for Cilium (NetworkPolicy enforcement) to be ready..."
+	# Poll for the DaemonSet to appear (minikube creates it just after start
+	# returns; `kubectl wait` errors out if it runs before the pods exist), then
+	# wait for the rollout. A genuinely kindnet cluster never grows ds/cilium →
+	# we fail loudly so policies are never silently unenforced.
+	@for i in $$(seq 1 60); do $(KUBECTL) -n kube-system get ds/cilium >/dev/null 2>&1 && break; sleep 2; done
+	@$(KUBECTL) -n kube-system get ds/cilium >/dev/null 2>&1 \
+	  || { echo "!! No Cilium DaemonSet — the cluster is on kindnet, which IGNORES NetworkPolicy."; \
+	       echo "!! Run 'minikube delete' then 'make start' again."; exit 1; }
+	@$(KUBECTL) -n kube-system rollout status ds/cilium --timeout=240s
 
 .PHONY: build
 build:   ## Build all local images straight into minikube's docker daemon
@@ -77,6 +92,30 @@ verify:  ## Prove the 4 patterns
 	$(KUBECTL) -n $(NS) get endpoints conversation-chat
 	@echo "== Pattern #4: load balancers =="
 	$(KUBECTL) -n $(NS) get svc conversation-chat-lb frontend
+
+.PHONY: netcheck
+netcheck:  ## Prove segmentation: same-zone ALLOWED, cross-zone DENIED (ephemeral netshoot)
+	@$(KUBECTL) -n kube-system get pods -l k8s-app=cilium --no-headers >/dev/null 2>&1 \
+	  && echo ">> Cilium present — NetworkPolicy is enforced" \
+	  || echo "!! WARNING: no cilium pods found — policies may NOT be enforced (kindnet?)"
+	@printf ">> NetworkPolicies installed (expect 12): "; $(KUBECTL) -n $(NS) get networkpolicy --no-headers | wc -l
+	@echo ">> probing from real pods (ephemeral netshoot inherits the pod's network identity):"
+	@probe() { \
+	  src=$$($(KUBECTL) -n $(NS) get pod -l app=$$1 --field-selector=status.phase=Running \
+	          -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
+	  [ -z "$$src" ] && { printf '   [skip] no running %s pod\n' "$$1"; return; }; \
+	  out=$$($(KUBECTL) -n $(NS) debug "$$src" -iq --image=nicolaka/netshoot \
+	          -- nc -zv -w4 "$$2" "$$3" 2>&1); \
+	  echo "$$out" | grep -q succeeded && verdict=REACHABLE || verdict=blocked; \
+	  printf '   %-42s expect %-5s -> %s\n' "$$1 -> $$2:$$3" "$$4" "$$verdict"; \
+	}; \
+	probe tenant            tenant-postgres 5432  ALLOW; \
+	probe conversation-chat redis           6379  ALLOW; \
+	probe chat-orch         compliance      8091  ALLOW; \
+	probe chat-orch         tenant-postgres 5432  DENY; \
+	probe frontend          redis           6379  DENY; \
+	probe agent-runtime     email-mongo     27017 DENY
+	@echo ">> ALLOW rows must be REACHABLE; DENY rows must be blocked. (Tip: hubble observe -n $(NS) --verdict DROPPED)"
 
 .PHONY: failover
 failover:  ## Demonstrate replica-set re-election: delete the current PRIMARY pod

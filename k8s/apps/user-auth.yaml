@@ -11,7 +11,8 @@ spec:
     matchLabels: { app: user-auth }
   template:
     metadata:
-      labels: { app: user-auth }
+      # net-* labels mirror docker-compose networks (see network/networkpolicies.yaml)
+      labels: { app: user-auth, net-orch: "true", net-tenant: "true", net-tenant-db: "true", net-email: "true" }
     spec:
       initContainers:
         - name: wait-for-user-auth-db

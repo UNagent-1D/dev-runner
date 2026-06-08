@@ -10,7 +10,8 @@ spec:
     matchLabels: { app: agent-runtime }
   template:
     metadata:
-      labels: { app: agent-runtime }
+      # net-* labels mirror docker-compose networks (see network/networkpolicies.yaml)
+      labels: { app: agent-runtime, net-orch: "true" }
     spec:
       containers:
         - name: agent-runtime

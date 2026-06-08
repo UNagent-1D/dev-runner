@@ -16,7 +16,8 @@ spec:
     matchLabels: { app: conversation-chat }
   template:
     metadata:
-      labels: { app: conversation-chat }
+      # net-* labels mirror docker-compose networks (see network/networkpolicies.yaml)
+      labels: { app: conversation-chat, net-orch: "true", net-chat-db: "true" }
     spec:
       # main.go log.Fatals if Redis/Mongo are unreachable at boot, so gate startup.
       initContainers:

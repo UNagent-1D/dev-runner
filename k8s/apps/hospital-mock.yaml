@@ -10,7 +10,8 @@ spec:
     matchLabels: { app: hospital-mock }
   template:
     metadata:
-      labels: { app: hospital-mock }
+      # net-* labels mirror docker-compose networks (see network/networkpolicies.yaml)
+      labels: { app: hospital-mock, net-orch: "true", net-hospital-db: "true" }
     spec:
       initContainers:
         - name: wait-for-postgres

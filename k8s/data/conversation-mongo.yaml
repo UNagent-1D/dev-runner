@@ -22,7 +22,8 @@ spec:
     matchLabels: { app: conversation-mongo }
   template:
     metadata:
-      labels: { app: conversation-mongo }
+      # net-* labels mirror docker-compose networks (see network/networkpolicies.yaml)
+      labels: { app: conversation-mongo, net-chat-db: "true" }
     spec:
       containers:
         - name: mongod

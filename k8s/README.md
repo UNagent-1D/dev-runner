@@ -23,11 +23,12 @@ uses competing-consumers, so replicas are interchangeable. `chat-orch` stays at
 ```
 k8s/
   kustomization.yaml      namespace: unagent + configMapGenerators (init SQL/migrations)
-  Makefile                start / build / deploy / verify / failover / clean
+  Makefile                start / build / deploy / verify / netcheck / failover / clean
   base/                   namespace, platform ConfigMap, platform Secret
   data/                   email-mongo (rs0), conversation-mongo, redis, rabbitmq, {tenant,hospital}-postgres
   jobs/                   tenant-migrate, tenant-seed
   apps/                   all 11 application workloads
+  network/                NetworkPolicies — the docker-compose "red" segmentation, enforced
 ```
 
 ## Prerequisites
@@ -35,34 +36,44 @@ k8s/
 - **Docker** (running), **kubectl** (v1.27+), **minikube** (v1.30+).
 - **RAM:** a full bring-up wants `--memory 8192`. The Rust/Java image builds are
   memory-hungry; close other heavy containers first.
-- **Kernel `xt_comment` module** (Linux hosts): minikube's bridge CNI needs the
-  iptables `comment` match. Check it is loadable:
+- **CNI: Cilium (eBPF).** `make start` brings the cluster up with `--cni=cilium`
+  because the [network segmentation](#network-segmentation) requires a CNI that
+  enforces `NetworkPolicy` — minikube's default kindnet/bridge CNI **silently
+  ignores** it. Cilium enforces policy in eBPF, which also sidesteps the
+  iptables/`xt_comment` kernel-module fragility the bridge CNI suffered on Arch.
+  It needs a modern kernel with BTF; check:
   ```bash
-  modprobe -n -v xt_comment   # must NOT say "not found"
+  test -f /sys/kernel/btf/vmlinux && echo "BTF ok (Cilium viable)"   # kernel >= 5.10, CONFIG_DEBUG_INFO_BTF=y
   ```
-  If it says *not found* on Arch, your running kernel's modules were removed by a
-  kernel upgrade — see [Troubleshooting](#troubleshooting) for the **no-reboot fix**.
+  The CNI is fixed at cluster creation. If you have an **existing kindnet
+  profile**, delete it first or policies won't be enforced:
+  ```bash
+  minikube delete        # then `make start` (recreates with Cilium) + `make build`
+  ```
 
 ## How to run it
 
 From the umbrella root:
 
 ```bash
-# 1. Cluster + addons (metrics-server is REQUIRED for the HPA in pattern #3)
+# 1. Cluster + Cilium CNI + addons (metrics-server is REQUIRED for the HPA in
+#    pattern #3; Cilium enforces the NetworkPolicy segmentation). If a kindnet
+#    profile already exists, `minikube delete` first — see Prerequisites.
 make -C k8s start
 
 # 2. Build all 10 local images straight into minikube's docker daemon
 make -C k8s build
 
-# 3. Render + apply everything (namespace → config → data → jobs → apps)
+# 3. Render + apply everything (namespace → config → data → jobs → apps → network)
 make -C k8s deploy
 
 # 4. (optional) inject real secrets — set OPENROUTER_API_KEY for live LLM replies
 make -C k8s secret
 
-# 5. Status + proof of all four patterns
+# 5. Status + proof of all four patterns + the network segmentation
 make -C k8s status
 make -C k8s verify
+make -C k8s netcheck     # proves same-zone reachable, cross-zone blocked
 make -C k8s failover     # kills the mongo PRIMARY → shows re-election
 ```
 
@@ -112,8 +123,72 @@ make -C k8s verify
 - **#4 Load balancer** — repeated requests to the LB return 200 and are distributed
   across the replicas (check both pods' logs).
 
+## Network segmentation
+
+This deployment mirrors the **`docker-compose.yml` network segmentation** (the
+"red" / *network* pattern) as enforced `NetworkPolicy`. In compose, each service
+joins only the bridge networks it needs and **two services can talk iff they
+share a network**. The same boundary is reproduced here.
+
+**How it maps** (`network/networkpolicies.yaml`):
+
+- Every pod carries additive labels `net-<zone>: "true"` — one per compose
+  network it belongs to (set in each workload's `spec.template.metadata.labels`;
+  Service/Deployment **selectors are untouched**, so nothing about discovery or
+  scaling changes).
+- `default-deny-ingress` denies all ingress namespace-wide.
+- One **intra-zone** policy per zone re-allows ingress between pods sharing that
+  zone (all ports — a compose bridge grants full mutual reachability, so this is
+  a faithful 1:1 mirror). The **union** of the zones a pod is in == the set of
+  pods it shares a network with == the compose matrix, exactly.
+- Two **public** allows keyed by `app:` label expose the external entrypoints:
+  `frontend:80` and `conversation-chat:8082` (the `conversation-chat-lb`
+  LoadBalancer — a k8s-only artifact with no compose `public_net` analog).
+- **Egress is intentionally unrestricted.** With egress open, "A reaches B"
+  reduces to "B admits A on ingress" (the matrix), and DNS + outbound internet
+  (OpenRouter / SendGrid / Telegram) keep working for free. Do **not** add egress
+  rules without also allowing kube-dns (UDP/TCP 53) and those external hosts.
+
+**Zones** (compose network → label; `auth_net`/`auth_db_net` are unused in compose):
+
+| Zone label | compose network | Members (`app:`) |
+|---|---|---|
+| `net-public` | public_net | frontend, chat-orch, grafana |
+| `net-orch` | orch_net | frontend, chat-orch, conversation-chat, agent-runtime, tenant, hospital-mock, user-auth, rabbitmq |
+| `net-tenant` | tenant_net | frontend, tenant, email-send, user-auth |
+| `net-compliance` | compliance_net | frontend, chat-orch, compliance, grafana |
+| `net-email` | email_net | email-send, user-auth, email-mongo, email-mongo-rs-init |
+| `net-tenant-db` | tenant_db_net | tenant, user-auth, tenant-postgres, tenant-migrate, tenant-seed |
+| `net-chat-db` | chat_db_net | conversation-chat, redis, conversation-mongo |
+| `net-hospital-db` | hospital_db_net | hospital-mock, hospital-postgres |
+| `net-compliance-db` | compliance_db_net | compliance, email-mongo |
+
+**Verify it:**
+
+```bash
+make -C k8s netcheck      # same-zone probes REACHABLE, cross-zone probes blocked
+kubectl -n unagent get networkpolicy           # 12 policies
+hubble observe -n unagent --verdict DROPPED     # watch a denied flow live (Cilium)
+```
+
+`netcheck` attaches an ephemeral `netshoot` container to a real source pod (it
+inherits that pod's Cilium identity) and runs `nc` against a target — e.g.
+`chat-orch → tenant-postgres:5432` is **blocked** (no shared zone) while
+`tenant → tenant-postgres:5432` is **reachable**. The four pattern demos
+(`make verify` / `make failover`) and the full chat flow are unaffected: they
+exercise only same-zone paths (mongo replica-set peers all share `net-email`),
+and `kubectl exec` / health probes never traverse the policy dataplane.
+
 ## Troubleshooting
 
+- **`make netcheck` shows everything REACHABLE (no DENY rows blocked), or
+  `make start` warns Cilium isn't running** — the cluster is on kindnet, which
+  ignores `NetworkPolicy`. You reused an old profile. `minikube delete`, then
+  `make start` (recreates with `--cni=cilium`) + `make build` + `make deploy`.
+- **`calico-node`/`cilium` pods CrashLoop or policies silently not enforced** —
+  on a stale Arch kernel (modules removed by an upgrade pre-reboot), the eBPF
+  dataplane can fail to load. Confirm `test -f /sys/kernel/btf/vmlinux` and that
+  `/lib/modules/$(uname -r)` exists; reboot into the current kernel if not.
 - **Pods stuck `ContainerCreating`; coredns never ready; events show
   `bridge CNI failed (add): iptables ... comment ... missing kernel module?`** — the
   host kernel can't load `xt_comment`, which minikube's bridge CNI needs. On Arch

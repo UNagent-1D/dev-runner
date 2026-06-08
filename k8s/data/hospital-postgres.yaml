@@ -22,7 +22,8 @@ spec:
     matchLabels: { app: hospital-postgres }
   template:
     metadata:
-      labels: { app: hospital-postgres }
+      # net-* labels mirror docker-compose networks (see network/networkpolicies.yaml)
+      labels: { app: hospital-postgres, net-hospital-db: "true" }
     spec:
       containers:
         - name: postgres

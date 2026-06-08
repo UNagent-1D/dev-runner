@@ -11,7 +11,8 @@ spec:
   activeDeadlineSeconds: 600
   template:
     metadata:
-      labels: { app: tenant-migrate }
+      # net-* labels mirror docker-compose networks (see network/networkpolicies.yaml)
+      labels: { app: tenant-migrate, net-tenant-db: "true" }
     spec:
       restartPolicy: OnFailure
       initContainers:

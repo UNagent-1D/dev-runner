@@ -24,7 +24,8 @@ spec:
     matchLabels: { app: rabbitmq }
   template:
     metadata:
-      labels: { app: rabbitmq }
+      # net-* labels mirror docker-compose networks (see network/networkpolicies.yaml)
+      labels: { app: rabbitmq, net-orch: "true" }
     spec:
       containers:
         - name: rabbitmq

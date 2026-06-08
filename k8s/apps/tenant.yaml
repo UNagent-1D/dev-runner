@@ -10,7 +10,8 @@ spec:
     matchLabels: { app: tenant }
   template:
     metadata:
-      labels: { app: tenant }
+      # net-* labels mirror docker-compose networks (see network/networkpolicies.yaml)
+      labels: { app: tenant, net-orch: "true", net-tenant: "true", net-tenant-db: "true" }
     spec:
       initContainers:
         - name: wait-for-schema

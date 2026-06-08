@@ -13,7 +13,8 @@ spec:
     matchLabels: { app: email-send }
   template:
     metadata:
-      labels: { app: email-send }
+      # net-* labels mirror docker-compose networks (see network/networkpolicies.yaml)
+      labels: { app: email-send, net-email: "true", net-tenant: "true" }
     spec:
       initContainers:
         - name: wait-for-mongo-primary

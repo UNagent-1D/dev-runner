@@ -1,0 +1,216 @@
+# ============================================================================
+# NETWORK SEGMENTATION — the docker-compose "red" (network) pattern, on k8s.
+#
+# docker-compose.yml puts each service on only the bridge networks it needs
+# (public_net, orch_net, tenant_net, compliance_net, email_net + exclusive
+# per-DB networks). Two containers can talk IFF they share a network.
+#
+# Here that model is reproduced with NetworkPolicy:
+#   * every pod carries additive labels  net-<zone>: "true"  for each compose
+#     network it belongs to (set in spec.template.metadata.labels of each
+#     workload — never in selectors);
+#   * `default-deny-ingress` denies all ingress namespace-wide;
+#   * one "intra-zone" policy per zone re-allows ingress between pods sharing
+#     that zone (ALL ports — a compose bridge grants full mutual reachability,
+#     so this is a faithful 1:1 mirror, not a stricter port-scoped variant);
+#   * the UNION of the zone policies a pod is selected by == the set of pods it
+#     shares >=1 network with == the compose reachability matrix, exactly.
+#
+# REQUIRES a NetworkPolicy-enforcing CNI. minikube's default kindnet/bridge CNI
+# SILENTLY IGNORES NetworkPolicy — see k8s/Makefile (`--cni=cilium`).
+#
+# EGRESS IS INTENTIONALLY UNRESTRICTED (no egress policies). This is correct and
+# load-bearing: with egress open, "A can reach B" reduces to "B admits A on
+# ingress" — which the zone policies below encode. It also preserves DNS
+# (kube-dns) and outbound internet (OpenRouter / SendGrid / Telegram) for free.
+# Adding egress rules would force re-encoding the whole matrix PLUS DNS + the
+# external FQDNs, with no faithfulness gain. compose does not restrict container
+# egress either. DO NOT add egress here without also allowing UDP/TCP 53 to
+# kube-dns and the external destinations, or every outbound call breaks.
+#
+# Zones (auth_net / auth_db_net in compose are attached to no service — vestigial,
+# not represented):
+#   net-public        public_net        — external entry zone
+#   net-orch          orch_net          — main chat-flow zone
+#   net-tenant        tenant_net        — auth/tenant source-of-truth zone
+#   net-compliance    compliance_net    — audit/metrics zone
+#   net-email         email_net         — transactional-email zone
+#   net-tenant-db     tenant_db_net     — tenant-postgres exclusive zone
+#   net-chat-db       chat_db_net       — redis + conversation-mongo zone
+#   net-hospital-db   hospital_db_net   — hospital-postgres exclusive zone
+#   net-compliance-db compliance_db_net — compliance<->email-mongo zone
+# ============================================================================
+---
+# Baseline: deny ALL ingress to every pod. The intra-zone + public policies
+# below add the permitted flows back. (Egress untouched — see header.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: unagent
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+# ── intra-zone allows (one per compose network) ────────────────────────────
+# Pattern: pods labelled net-<zone> accept ingress from pods labelled net-<zone>.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-zone-public
+  namespace: unagent
+spec:
+  podSelector:
+    matchLabels: { net-public: "true" }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { net-public: "true" }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-zone-orch
+  namespace: unagent
+spec:
+  podSelector:
+    matchLabels: { net-orch: "true" }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { net-orch: "true" }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-zone-tenant
+  namespace: unagent
+spec:
+  podSelector:
+    matchLabels: { net-tenant: "true" }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { net-tenant: "true" }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-zone-compliance
+  namespace: unagent
+spec:
+  podSelector:
+    matchLabels: { net-compliance: "true" }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { net-compliance: "true" }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-zone-email
+  namespace: unagent
+spec:
+  podSelector:
+    matchLabels: { net-email: "true" }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { net-email: "true" }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-zone-tenant-db
+  namespace: unagent
+spec:
+  podSelector:
+    matchLabels: { net-tenant-db: "true" }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { net-tenant-db: "true" }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-zone-chat-db
+  namespace: unagent
+spec:
+  podSelector:
+    matchLabels: { net-chat-db: "true" }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { net-chat-db: "true" }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-zone-hospital-db
+  namespace: unagent
+spec:
+  podSelector:
+    matchLabels: { net-hospital-db: "true" }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { net-hospital-db: "true" }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-zone-compliance-db
+  namespace: unagent
+spec:
+  podSelector:
+    matchLabels: { net-compliance-db: "true" }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { net-compliance-db: "true" }
+---
+# ── public entrypoints (keyed by app: label, not zone) ──────────────────────
+# These are the externally-reachable Services. The `from` is omitted so ingress
+# is allowed from ANY source on the listed port — LoadBalancer / `minikube
+# tunnel` / NodePort traffic arrives SNAT'd from the node, so source-based
+# filtering is neither possible nor desired for a public entrypoint.
+#
+# frontend is in public_net; conversation-chat is NOT (it is orch_net+chat_db_net)
+# but carries a k8s-only LoadBalancer (conversation-chat-lb, pattern #4) with no
+# compose analog — hence an explicit app-keyed allow rather than a zone policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-public-frontend
+  namespace: unagent
+spec:
+  podSelector:
+    matchLabels: { app: frontend }
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - { protocol: TCP, port: 80 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-public-conversation-chat
+  namespace: unagent
+spec:
+  podSelector:
+    matchLabels: { app: conversation-chat }
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - { protocol: TCP, port: 8082 }

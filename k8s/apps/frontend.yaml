@@ -13,7 +13,8 @@ spec:
     matchLabels: { app: frontend }
   template:
     metadata:
-      labels: { app: frontend }
+      # net-* labels mirror docker-compose networks (see network/networkpolicies.yaml)
+      labels: { app: frontend, net-public: "true", net-orch: "true", net-tenant: "true", net-compliance: "true" }
     spec:
       containers:
         - name: frontend

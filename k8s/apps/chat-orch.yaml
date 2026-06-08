@@ -12,7 +12,8 @@ spec:
     matchLabels: { app: chat-orch }
   template:
     metadata:
-      labels: { app: chat-orch }
+      # net-* labels mirror docker-compose networks (see network/networkpolicies.yaml)
+      labels: { app: chat-orch, net-public: "true", net-orch: "true", net-compliance: "true" }
     spec:
       containers:
         - name: chat-orch

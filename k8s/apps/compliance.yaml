@@ -12,7 +12,8 @@ spec:
     matchLabels: { app: compliance }
   template:
     metadata:
-      labels: { app: compliance }
+      # net-* labels mirror docker-compose networks (see network/networkpolicies.yaml)
+      labels: { app: compliance, net-compliance: "true", net-compliance-db: "true" }
     spec:
       containers:
         - name: compliance

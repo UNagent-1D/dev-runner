@@ -11,7 +11,8 @@ spec:
     matchLabels: { app: grafana }
   template:
     metadata:
-      labels: { app: grafana }
+      # net-* labels mirror docker-compose networks (see network/networkpolicies.yaml)
+      labels: { app: grafana, net-public: "true", net-compliance: "true" }
     spec:
       containers:
         - name: grafana
