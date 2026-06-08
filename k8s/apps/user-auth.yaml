@@ -1,0 +1,66 @@
+# OTP auth microservice (Go). Uses the user_auth DB on tenant-postgres (created
+# by the tenant-postgres init script). Waits for that DB before serving.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-auth
+  labels: { app: user-auth }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: user-auth }
+  template:
+    metadata:
+      labels: { app: user-auth }
+    spec:
+      initContainers:
+        - name: wait-for-user-auth-db
+          image: postgres:16-alpine
+          command: ["sh", "-c"]
+          args:
+            - |
+              until psql "$DB_URL" -c 'SELECT 1' >/dev/null 2>&1; do
+                echo waiting for user_auth database; sleep 2;
+              done
+          env:
+            - name: DB_URL
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: DATABASE_URL_USER_AUTH } }
+      containers:
+        - name: user-auth
+          image: unagent/user-auth:local
+          imagePullPolicy: Never
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - { name: PORT, value: "8080" }
+            - name: DB_URL
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: DATABASE_URL_USER_AUTH } }
+            - name: JWT_SECRET
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: JWT_SECRET } }
+            - { name: EMAIL_SERVICE_URL, value: "http://email-send:8080/api/v1/emails" }
+            - { name: AUTH_FROM_EMAIL, value: "noreply@unagent.local" }
+            - { name: TENANT_INTERNAL_URL, value: "http://tenant:8080" }
+            - name: INTERNAL_API_KEY
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: INTERNAL_API_KEY } }
+            - { name: GODEBUG, value: "netdns=go" }
+          readinessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 300m, memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: user-auth
+  labels: { app: user-auth }
+spec:
+  selector: { app: user-auth }
+  ports:
+    - { name: http, port: 8080, targetPort: 8080 }

@@ -1,0 +1,70 @@
+# Front-door orchestrator. replicas: 1 — it holds an in-memory SessionStore and a
+# per-process SSE hub (/v1/chat/stream), so it is NOT horizontally replicated.
+# Reached publicly through the frontend nginx proxy (/v1/*).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chat-orch
+  labels: { app: chat-orch }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: chat-orch }
+  template:
+    metadata:
+      labels: { app: chat-orch }
+    spec:
+      containers:
+        - name: chat-orch
+          image: unagent/chat-orch:local
+          imagePullPolicy: Never
+          ports:
+            - { name: http, containerPort: 3000 }
+          env:
+            - { name: SERVER_HOST, value: "0.0.0.0" }
+            - { name: SERVER_PORT, value: "3000" }
+            - { name: CONVERSATION_CHAT_URL, value: "http://conversation-chat:8082" }
+            - { name: TENANT_SERVICE_URL, value: "http://tenant:8080" }
+            - { name: METRICAS_URL, value: "http://compliance:8091" }
+            - { name: HOSPITAL_MOCK_URL, value: "http://hospital-mock:8080" }
+            - { name: AGENT_RUNTIME_URL, value: "http://agent-runtime:3100" }
+            - { name: USER_AUTH_URL, value: "http://user-auth:8080" }
+            - { name: TELEGRAM_DEFAULT_TENANT_ID, value: "demo-tenant" }
+            - { name: TELEGRAM_DEFAULT_TENANT_SLUG, value: "demo-hospital" }
+            - { name: CORS_ALLOW_ORIGIN, value: "*" }
+            - name: INTERNAL_API_KEY
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: INTERNAL_API_KEY } }
+            - name: OPENAI_API_KEY
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: OPENROUTER_API_KEY } }
+            - name: OPENAI_BASE_URL
+              valueFrom: { configMapKeyRef: { name: platform-config, key: OPENAI_BASE_URL } }
+            - name: OPENAI_DEFAULT_MODEL
+              valueFrom: { configMapKeyRef: { name: platform-config, key: OPENAI_DEFAULT_MODEL } }
+            - name: BACKEND_CHANNEL_ENABLED
+              valueFrom: { configMapKeyRef: { name: platform-config, key: BACKEND_CHANNEL_ENABLED } }
+            - name: BACKEND_CHANNEL_KEY
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: BACKEND_CHANNEL_KEY } }
+            - { name: RUST_LOG, value: "chat_orch=info,tower_http=info" }
+            - name: LOG_FORMAT
+              valueFrom: { configMapKeyRef: { name: platform-config, key: LOG_FORMAT } }
+          readinessProbe:
+            httpGet: { path: /health, port: 3000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 3000 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chat-orch
+  labels: { app: chat-orch }
+spec:
+  selector: { app: chat-orch }
+  ports:
+    - { name: http, port: 3000, targetPort: 3000 }

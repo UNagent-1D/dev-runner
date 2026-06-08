@@ -1,0 +1,48 @@
+# conversation-chat session/history store. Single-node (NOT a replica set):
+# only email-mongo carries the replication pattern.
+apiVersion: v1
+kind: Service
+metadata:
+  name: conversation-mongo
+  labels: { app: conversation-mongo }
+spec:
+  selector: { app: conversation-mongo }
+  ports:
+    - { name: mongo, port: 27017, targetPort: 27017 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: conversation-mongo
+  labels: { app: conversation-mongo }
+spec:
+  serviceName: conversation-mongo
+  replicas: 1
+  selector:
+    matchLabels: { app: conversation-mongo }
+  template:
+    metadata:
+      labels: { app: conversation-mongo }
+    spec:
+      containers:
+        - name: mongod
+          image: mongo:7
+          ports:
+            - { name: mongo, containerPort: 27017 }
+          volumeMounts:
+            - { name: data, mountPath: /data/db }
+          readinessProbe:
+            exec:
+              command: ["mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 768Mi }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: standard
+        resources: { requests: { storage: 1Gi } }

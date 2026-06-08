@@ -1,0 +1,124 @@
+# ============================================================================
+# PATTERN #3 (cluster + replication) and #4 (load balancer) — conversation-chat
+# The LLM-connected service. State is externalized to Redis + conversation-mongo,
+# and the RabbitMQ worker uses competing-consumers (manual ack, no requeue), so
+# replicas are interchangeable. The HPA owns replica count (no static replicas).
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: conversation-chat
+  labels: { app: conversation-chat }
+spec:
+  # NOTE: no `replicas:` — the HorizontalPodAutoscaler below owns it (avoids
+  # apply-time thrash between the static field and the HPA).
+  selector:
+    matchLabels: { app: conversation-chat }
+  template:
+    metadata:
+      labels: { app: conversation-chat }
+    spec:
+      # main.go log.Fatals if Redis/Mongo are unreachable at boot, so gate startup.
+      initContainers:
+        - name: wait-for-deps
+          image: busybox:1.36
+          command: ["sh", "-c"]
+          args:
+            - |
+              until nc -z conversation-mongo 27017; do echo waiting mongo; sleep 2; done
+              until nc -z redis 6379; do echo waiting redis; sleep 2; done
+              until nc -z rabbitmq 5672; do echo waiting rabbitmq; sleep 2; done
+      containers:
+        - name: conversation-chat
+          image: unagent/conversation-chat:local
+          imagePullPolicy: Never
+          ports:
+            - { name: http, containerPort: 8082 }
+          env:
+            - { name: SERVER_PORT, value: "8082" }
+            - { name: APP_VERSION, value: "1.0.0" }
+            - name: GIN_MODE
+              valueFrom: { configMapKeyRef: { name: platform-config, key: GIN_MODE } }
+            - { name: REDIS_URL, value: "redis://redis:6379/1" }
+            # Single-node conversation store — NOT the email-mongo replica set.
+            - { name: MONGO_URI, value: "mongodb://conversation-mongo:27017" }
+            - { name: MONGO_DB, value: "conversatory" }
+            - { name: ACR_SERVICE_URL, value: "http://agent-runtime:3100" }
+            # IMPORTANT: conversation-chat talks to agent-runtime for tenant/ACR
+            # stubs — NOT the tenant service.
+            - { name: TENANT_SERVICE_URL, value: "http://agent-runtime:3100" }
+            - { name: AUTH_SERVICE_URL, value: "http://tenant:8080" }
+            # Remap: binary reads OPENAI_API_KEY; secret stores OPENROUTER_API_KEY.
+            - name: OPENAI_API_KEY
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: OPENROUTER_API_KEY } }
+            - name: OPENAI_BASE_URL
+              valueFrom: { configMapKeyRef: { name: platform-config, key: OPENAI_BASE_URL } }
+            - { name: AUTH_STUB, value: "true" }
+            - { name: AUTH_STUB_USER_ID, value: "00000000-0000-0000-0000-000000000001" }
+            - { name: AUTH_STUB_ROLE, value: "app_admin" }
+            - { name: AUTH_STUB_EMAIL, value: "internal@platform.local" }
+            - { name: DEFAULT_IDLE_TIMEOUT_SECONDS, value: "300" }
+            - { name: RABBITMQ_URL, value: "amqp://rabbitmq:5672" }
+            - name: BACKEND_CHANNEL_ENABLED
+              valueFrom: { configMapKeyRef: { name: platform-config, key: BACKEND_CHANNEL_ENABLED } }
+            - name: BACKEND_CHANNEL_KEY
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: BACKEND_CHANNEL_KEY } }
+          readinessProbe:
+            httpGet: { path: /api/v1/health, port: 8082 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /api/v1/health, port: 8082 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }   # cpu request required for HPA math
+            limits: { cpu: 500m, memory: 512Mi }
+---
+# Internal service-discovery entry (callers: chat-orch, agent-runtime, frontend nginx)
+apiVersion: v1
+kind: Service
+metadata:
+  name: conversation-chat
+  labels: { app: conversation-chat }
+spec:
+  type: ClusterIP
+  selector: { app: conversation-chat }
+  ports:
+    - { name: http, port: 8082, targetPort: 8082 }
+---
+# THE LOAD BALANCER (pattern #4) — external access to the conversation-chat
+# cluster. On minikube needs `minikube tunnel` to get an EXTERNAL-IP.
+# sessionAffinity: None — safe because all session state is externalized.
+apiVersion: v1
+kind: Service
+metadata:
+  name: conversation-chat-lb
+  labels: { app: conversation-chat, role: load-balancer }
+spec:
+  type: LoadBalancer
+  sessionAffinity: None
+  selector: { app: conversation-chat }
+  ports:
+    - { name: http, port: 8082, targetPort: 8082 }
+---
+# CLUSTER auto-scaling (pattern #3) — requires `minikube addons enable metrics-server`.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: conversation-chat
+  labels: { app: conversation-chat }
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: conversation-chat
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

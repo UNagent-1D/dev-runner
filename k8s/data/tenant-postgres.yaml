@@ -1,0 +1,60 @@
+# Tenant auth DB. Schema is applied by the tenant-migrate Job (golang-migrate);
+# this init script only bootstraps the separate user_auth database + table that
+# User-Auth owns (mounted from scripts/data-stores/user-auth-init.sql via the
+# tenant-postgres-init ConfigMap generated in kustomization.yaml).
+apiVersion: v1
+kind: Service
+metadata:
+  name: tenant-postgres
+  labels: { app: tenant-postgres }
+spec:
+  selector: { app: tenant-postgres }
+  ports:
+    - { name: postgres, port: 5432, targetPort: 5432 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: tenant-postgres
+  labels: { app: tenant-postgres }
+spec:
+  serviceName: tenant-postgres
+  replicas: 1
+  selector:
+    matchLabels: { app: tenant-postgres }
+  template:
+    metadata:
+      labels: { app: tenant-postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - { name: POSTGRES_DB, value: "tenant" }
+            - { name: POSTGRES_USER, value: "tenant" }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: platform-secrets, key: POSTGRES_PASSWORD_TENANT }
+            - { name: PGDATA, value: "/var/lib/postgresql/data/pgdata" }
+          ports:
+            - { name: postgres, containerPort: 5432 }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: init, mountPath: /docker-entrypoint-initdb.d, readOnly: true }
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "tenant", "-d", "tenant"] }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+      volumes:
+        - name: init
+          configMap: { name: tenant-postgres-init }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: standard
+        resources: { requests: { storage: 1Gi } }

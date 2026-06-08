@@ -1,0 +1,58 @@
+# Hospital-MP backing store. schema.sql + seed.sql applied on first boot via the
+# hospital-postgres-init ConfigMap (generated from Hospital-MP/{schema,seed}.sql).
+apiVersion: v1
+kind: Service
+metadata:
+  name: hospital-postgres
+  labels: { app: hospital-postgres }
+spec:
+  selector: { app: hospital-postgres }
+  ports:
+    - { name: postgres, port: 5432, targetPort: 5432 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: hospital-postgres
+  labels: { app: hospital-postgres }
+spec:
+  serviceName: hospital-postgres
+  replicas: 1
+  selector:
+    matchLabels: { app: hospital-postgres }
+  template:
+    metadata:
+      labels: { app: hospital-postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - { name: POSTGRES_DB, value: "hospital" }
+            - { name: POSTGRES_USER, value: "hospital" }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: platform-secrets, key: POSTGRES_PASSWORD_HOSPITAL }
+            - { name: PGDATA, value: "/var/lib/postgresql/data/pgdata" }
+          ports:
+            - { name: postgres, containerPort: 5432 }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: init, mountPath: /docker-entrypoint-initdb.d, readOnly: true }
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "hospital", "-d", "hospital"] }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+      volumes:
+        - name: init
+          configMap: { name: hospital-postgres-init }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: standard
+        resources: { requests: { storage: 1Gi } }

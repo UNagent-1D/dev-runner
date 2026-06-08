@@ -1,0 +1,85 @@
+# Outbound email + audit trail (Java/Spring Boot). Writes email_audit to the
+# email-mongo REPLICA SET. MongoIndexInitializer does ensureIndex() WRITES at
+# boot, which require a PRIMARY — so an initContainer blocks until one is elected
+# (otherwise the Spring context fails and the pod CrashLoopBackOffs).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: email-send
+  labels: { app: email-send }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: email-send }
+  template:
+    metadata:
+      labels: { app: email-send }
+    spec:
+      initContainers:
+        - name: wait-for-mongo-primary
+          image: mongo:7
+          command: ["bash", "-c"]
+          args:
+            - |
+              echo "waiting for a writable PRIMARY on the email-mongo replica set..."
+              # Connect via the full RS URI (driver routes to the primary). Anchored
+              # string equality — not an unanchored `grep true` substring match.
+              until [ "$(mongosh "$EMAIL_MONGO_RS_URI" --quiet --eval 'db.hello().isWritablePrimary' 2>/dev/null)" = "true" ]; do
+                sleep 3;
+              done
+              echo "primary is up"
+          env:
+            - name: EMAIL_MONGO_RS_URI
+              valueFrom: { configMapKeyRef: { name: platform-config, key: EMAIL_MONGO_RS_URI } }
+      containers:
+        - name: email-send
+          image: unagent/email-send:local
+          imagePullPolicy: Never
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - { name: SERVER_PORT, value: "8080" }
+            - name: MONGO_URI
+              valueFrom: { configMapKeyRef: { name: platform-config, key: EMAIL_MONGO_RS_URI } }
+            - { name: MONGO_DB_EMAIL, value: "email_audit" }
+            - name: SENDGRID_API_KEY
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: SENDGRID_API_KEY } }
+            - { name: SENDGRID_SANDBOX_MODE, value: "true" }
+            - { name: EMAIL_FROM_DEFAULT, value: "noreply@unagent.local" }
+            - { name: EMAIL_FROM_NAME, value: "UNAgent Notifications" }
+            - name: JWT_SECRET
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: JWT_SECRET } }
+            - { name: AUTH_STUB, value: "true" }
+            - { name: AUTH_STUB_USER_ID, value: "00000000-0000-0000-0000-000000000001" }
+            - { name: AUTH_STUB_ROLE, value: "app_admin" }
+            - { name: AUTH_STUB_EMAIL, value: "internal@platform.local" }
+            - name: BACKEND_CHANNEL_ENABLED
+              valueFrom: { configMapKeyRef: { name: platform-config, key: BACKEND_CHANNEL_ENABLED } }
+            - name: BACKEND_CHANNEL_KEY
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: BACKEND_CHANNEL_KEY } }
+            - name: LOG_FORMAT
+              valueFrom: { configMapKeyRef: { name: platform-config, key: LOG_FORMAT } }
+          # Spring Boot is slow to boot — gate liveness behind a startupProbe.
+          startupProbe:
+            httpGet: { path: /health, port: 8080 }
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet: { path: /health, port: 8080 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8080 }
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 700m, memory: 768Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: email-send
+  labels: { app: email-send }
+spec:
+  selector: { app: email-send }
+  ports:
+    - { name: http, port: 8080, targetPort: 8080 }

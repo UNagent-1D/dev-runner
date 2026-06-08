@@ -1,0 +1,52 @@
+# Mock hospital scheduling API (Python/Flask).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hospital-mock
+  labels: { app: hospital-mock }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: hospital-mock }
+  template:
+    metadata:
+      labels: { app: hospital-mock }
+    spec:
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:16-alpine
+          command: ["sh", "-c", "until pg_isready -h hospital-postgres -U hospital -d hospital; do echo waiting hospital-postgres; sleep 2; done"]
+      containers:
+        - name: hospital-mock
+          image: unagent/hospital-mock:local
+          imagePullPolicy: Never
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: DATABASE_URL_HOSPITAL } }
+            - name: BACKEND_CHANNEL_ENABLED
+              valueFrom: { configMapKeyRef: { name: platform-config, key: BACKEND_CHANNEL_ENABLED } }
+            - name: BACKEND_CHANNEL_KEY
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: BACKEND_CHANNEL_KEY } }
+          readinessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 300m, memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hospital-mock
+  labels: { app: hospital-mock }
+spec:
+  selector: { app: hospital-mock }
+  ports:
+    - { name: http, port: 8080, targetPort: 8080 }

@@ -1,0 +1,53 @@
+# KPI counters + audit-log writer (Python/FastAPI). Writes audit_logs to the
+# email-mongo REPLICA SET (pattern #1 consumer). Write-tolerant: audit inserts
+# are best-effort, so it can come up before a PRIMARY exists.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compliance
+  labels: { app: compliance }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: compliance }
+  template:
+    metadata:
+      labels: { app: compliance }
+    spec:
+      containers:
+        - name: compliance
+          image: unagent/compliance:local
+          imagePullPolicy: Never
+          ports:
+            - { name: http, containerPort: 8091 }
+          env:
+            # Consume the replica-set URI — this is what wires Compliance to the
+            # replicated MongoDB.
+            - name: MONGO_URI
+              valueFrom: { configMapKeyRef: { name: platform-config, key: EMAIL_MONGO_RS_URI } }
+            - { name: MONGO_DB_COMPLIANCE, value: "UN_compliance_db" }
+            - name: BACKEND_CHANNEL_ENABLED
+              valueFrom: { configMapKeyRef: { name: platform-config, key: BACKEND_CHANNEL_ENABLED } }
+            - name: BACKEND_CHANNEL_KEY
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: BACKEND_CHANNEL_KEY } }
+          readinessProbe:
+            httpGet: { path: /health, port: 8091 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8091 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 300m, memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: compliance
+  labels: { app: compliance }
+spec:
+  selector: { app: compliance }
+  ports:
+    - { name: http, port: 8091, targetPort: 8091 }

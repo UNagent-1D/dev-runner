@@ -1,0 +1,62 @@
+# Auth + tenant admin API (Go/Gin). Waits for the migrated schema before serving.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tenant
+  labels: { app: tenant }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: tenant }
+  template:
+    metadata:
+      labels: { app: tenant }
+    spec:
+      initContainers:
+        - name: wait-for-schema
+          image: postgres:16-alpine
+          command: ["sh", "-c"]
+          args:
+            - |
+              until psql "$DATABASE_URL" -tAc "SELECT 1 FROM schema_migrations WHERE version >= 4 AND NOT dirty" 2>/dev/null | grep -qx 1; do
+                echo waiting for migrated tenant schema; sleep 2;
+              done
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: DATABASE_URL_TENANT } }
+      containers:
+        - name: tenant
+          image: unagent/tenant:local
+          imagePullPolicy: Never
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: DATABASE_URL_TENANT } }
+            - name: JWT_SECRET
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: JWT_SECRET } }
+            - name: INTERNAL_API_KEY
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: INTERNAL_API_KEY } }
+            - name: GIN_MODE
+              valueFrom: { configMapKeyRef: { name: platform-config, key: GIN_MODE } }
+          readinessProbe:
+            httpGet: { path: /api/v1/health, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /api/v1/health, port: 8080 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 300m, memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tenant
+  labels: { app: tenant }
+spec:
+  selector: { app: tenant }
+  ports:
+    - { name: http, port: 8080, targetPort: 8080 }

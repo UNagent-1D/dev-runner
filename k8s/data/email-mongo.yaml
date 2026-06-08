@@ -1,0 +1,134 @@
+# ============================================================================
+# PATTERN #1 — MongoDB REPLICATION
+# email-mongo as a 3-member replica set "rs0". Backs BOTH Compliance
+# (UN_compliance_db.audit_logs) and email-send (email_audit). Consumers connect
+# with EMAIL_MONGO_RS_URI (see platform-config).
+# ============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: email-mongo
+  labels: { app: email-mongo }
+spec:
+  # Headless: gives each StatefulSet pod a stable DNS A record
+  #   email-mongo-{0,1,2}.email-mongo.<ns>.svc.cluster.local
+  # This is the discovery primitive the replica set needs for stable membership.
+  clusterIP: None
+  publishNotReadyAddresses: true   # let rs.initiate() reach members pre-readiness
+  selector: { app: email-mongo }
+  ports:
+    - name: mongo
+      port: 27017
+      targetPort: 27017
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: email-mongo
+  labels: { app: email-mongo }
+spec:
+  serviceName: email-mongo
+  replicas: 3
+  podManagementPolicy: Parallel   # all 3 pods + DNS come up together → rs.initiate has quorum
+  selector:
+    matchLabels: { app: email-mongo }
+  template:
+    metadata:
+      labels: { app: email-mongo }
+    spec:
+      terminationGracePeriodSeconds: 15
+      containers:
+        - name: mongod
+          image: mongo:7
+          args: ["--replSet", "rs0", "--bind_ip_all"]
+          ports:
+            - { name: mongo, containerPort: 27017 }
+          volumeMounts:
+            - { name: data, mountPath: /data/db }
+          readinessProbe:
+            exec:
+              command: ["mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 768Mi }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 1Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: email-mongo-rs-init
+  labels: { app: email-mongo }
+spec:
+  backoffLimit: 10
+  activeDeadlineSeconds: 600   # surface a stuck bootstrap as a failed Job, never hang forever
+  template:
+    metadata:
+      labels: { app: email-mongo-rs-init }
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: rs-init
+          image: mongo:7
+          command: ["bash", "-c"]
+          env:
+            - name: EMAIL_MONGO_RS_URI
+              valueFrom: { configMapKeyRef: { name: platform-config, key: EMAIL_MONGO_RS_URI } }
+          args:
+            - |
+              set -e
+              echo "Waiting for all 3 mongod members to answer ping..."
+              for h in email-mongo-0 email-mongo-1 email-mongo-2; do
+                until mongosh --host "$h.email-mongo" --quiet --eval 'db.adminCommand("ping").ok' >/dev/null 2>&1; do
+                  echo "  $h not ready, retrying..."; sleep 2;
+                done
+                echo "  $h is up"
+              done
+
+              echo "Ensuring replica set rs0 is initiated (idempotent; retries on transient election states)..."
+              for i in $(seq 1 40); do
+                out=$(mongosh --host email-mongo-0.email-mongo --quiet --eval '
+                  let s;
+                  try { s = rs.status(); } catch (e) { s = { error: true, code: e.code, codeName: e.codeName }; }
+                  if (s.error && (s.code === 94 || s.codeName === "NotYetInitialized")) {
+                    rs.initiate({ _id: "rs0", members: [
+                      { _id: 0, host: "email-mongo-0.email-mongo:27017" },
+                      { _id: 1, host: "email-mongo-1.email-mongo:27017" },
+                      { _id: 2, host: "email-mongo-2.email-mongo:27017" } ] });
+                    print("INITIATED");
+                  } else if (!s.error && s.set === "rs0") {
+                    print("ALREADY_OK");        // existing rs0 config — leave it
+                  } else {
+                    print("RETRY");             // election in progress / other recoverable error
+                  }' 2>/dev/null) || true
+                echo "  attempt $i: $out"
+                case "$out" in *INITIATED*|*ALREADY_OK*) break;; esac
+                sleep 3
+              done
+
+              echo "Waiting for a PRIMARY to be elected (any member)..."
+              # db.hello().primary returns the primary host:port once elected (visible
+              # from any member), empty until then. -n test — no unanchored substring grep.
+              until [ -n "$(mongosh --host email-mongo-0.email-mongo --quiet --eval 'db.hello().primary' 2>/dev/null)" ]; do
+                sleep 2;
+              done
+              echo "Replica set rs0 ready. PRIMARY = $(mongosh --host email-mongo-0.email-mongo --quiet --eval 'db.hello().primary' 2>/dev/null)"
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 250m, memory: 256Mi }

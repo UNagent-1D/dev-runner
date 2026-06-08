@@ -1,0 +1,48 @@
+# Observability dashboards. emptyDir storage (no persistence needed for the lab).
+# Reach via: kubectl -n unagent port-forward svc/grafana 3001:3000
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  labels: { app: grafana }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: grafana }
+  template:
+    metadata:
+      labels: { app: grafana }
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana-oss:11.6.0
+          ports:
+            - { name: http, containerPort: 3000 }
+          env:
+            - { name: GF_SECURITY_ADMIN_USER, value: "admin" }
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: GRAFANA_ADMIN_PASSWORD } }
+            - { name: GF_USERS_ALLOW_SIGN_UP, value: "false" }
+            - { name: GF_INSTALL_PLUGINS, value: "yesoreyeram-infinity-datasource" }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/grafana }
+          readinessProbe:
+            httpGet: { path: /api/health, port: 3000 }
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 300m, memory: 384Mi }
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  labels: { app: grafana }
+spec:
+  selector: { app: grafana }
+  ports:
+    - { name: http, port: 3000, targetPort: 3000 }

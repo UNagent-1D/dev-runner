@@ -1,0 +1,57 @@
+# ACR stub + tenant stub + session proxy. Bridges chat-orch → conversation-chat.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-runtime
+  labels: { app: agent-runtime }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: agent-runtime }
+  template:
+    metadata:
+      labels: { app: agent-runtime }
+    spec:
+      containers:
+        - name: agent-runtime
+          image: unagent/agent-runtime:local
+          imagePullPolicy: Never
+          ports:
+            - { name: http, containerPort: 3100 }
+          env:
+            - { name: PORT, value: "3100" }
+            - { name: CONVERSATION_CHAT_URL, value: "http://conversation-chat:8082" }
+            - { name: HOSPITAL_MOCK_URL, value: "http://hospital-mock:8080" }
+            - { name: TENANT_INTERNAL_URL, value: "http://tenant:8080" }
+            - { name: RABBITMQ_URL, value: "amqp://rabbitmq:5672" }
+            - name: OPENAI_BASE_URL
+              valueFrom: { configMapKeyRef: { name: platform-config, key: OPENAI_BASE_URL } }
+            - name: OPENAI_DEFAULT_MODEL
+              valueFrom: { configMapKeyRef: { name: platform-config, key: OPENAI_DEFAULT_MODEL } }
+            - name: INTERNAL_API_KEY
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: INTERNAL_API_KEY } }
+            - name: BACKEND_CHANNEL_ENABLED
+              valueFrom: { configMapKeyRef: { name: platform-config, key: BACKEND_CHANNEL_ENABLED } }
+            - name: BACKEND_CHANNEL_KEY
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: BACKEND_CHANNEL_KEY } }
+          readinessProbe:
+            httpGet: { path: /health, port: 3100 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 3100 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 300m, memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-runtime
+  labels: { app: agent-runtime }
+spec:
+  selector: { app: agent-runtime }
+  ports:
+    - { name: http, port: 3100, targetPort: 3100 }

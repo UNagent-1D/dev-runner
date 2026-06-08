@@ -1,0 +1,51 @@
+# RabbitMQ — async chat_requests / chat_results queues consumed by
+# conversation-chat::worker and agent-runtime::broker. Built locally from
+# UN_message_broker_mb (pre-declared durable queues via definitions.json).
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  labels: { app: rabbitmq }
+spec:
+  selector: { app: rabbitmq }
+  ports:
+    - { name: amqp, port: 5672, targetPort: 5672 }
+    - { name: management, port: 15672, targetPort: 15672 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rabbitmq
+  labels: { app: rabbitmq }
+spec:
+  serviceName: rabbitmq
+  replicas: 1
+  selector:
+    matchLabels: { app: rabbitmq }
+  template:
+    metadata:
+      labels: { app: rabbitmq }
+    spec:
+      containers:
+        - name: rabbitmq
+          image: unagent/rabbitmq:local
+          imagePullPolicy: Never
+          ports:
+            - { name: amqp, containerPort: 5672 }
+            - { name: management, containerPort: 15672 }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/rabbitmq }
+          readinessProbe:
+            exec: { command: ["rabbitmq-diagnostics", "ping"] }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 10
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 768Mi }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: standard
+        resources: { requests: { storage: 1Gi } }

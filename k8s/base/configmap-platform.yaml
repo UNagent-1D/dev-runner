@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-config
+  labels:
+    app.kubernetes.io/part-of: unagent
+# Non-secret, cross-service configuration. Service-specific URLs are set inline
+# per Deployment (some keys, e.g. TENANT_SERVICE_URL, differ by consumer), so
+# this map holds only values that are genuinely shared.
+data:
+  # --- LLM provider (OpenRouter, OpenAI-compatible) ---
+  OPENAI_BASE_URL: "https://openrouter.ai/api/v1"
+  OPENAI_DEFAULT_MODEL: "nvidia/nemotron-3-super-120b-a12b:free"
+
+  # --- Secure channel kill switch (plaintext for the local lab) ---
+  BACKEND_CHANNEL_ENABLED: "false"
+
+  # --- Logging ---
+  LOG_FORMAT: "json"
+  GIN_MODE: "release"
+
+  # --- Pattern #1: email-mongo replica-set connection string ---
+  # Bare-form member list (namespace-agnostic): consumers (compliance, email-send)
+  # must run in the same namespace as the StatefulSet. Members are registered with
+  # rs.initiate() using these exact host strings — see email-mongo rs-init Job.
+  EMAIL_MONGO_RS_URI: "mongodb://email-mongo-0.email-mongo:27017,email-mongo-1.email-mongo:27017,email-mongo-2.email-mongo:27017/?replicaSet=rs0"

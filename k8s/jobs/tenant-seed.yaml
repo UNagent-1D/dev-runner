@@ -1,0 +1,46 @@
+# Seeds the idempotent demo app-admin (admin@demo.com / demo1234). Runs the
+# /app/seed binary from the locally-built Tenant image. Gated behind the
+# migrations being applied (waits for the "users" table to exist).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tenant-seed
+  labels: { app: tenant-seed }
+spec:
+  backoffLimit: 5
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels: { app: tenant-seed }
+    spec:
+      restartPolicy: Never
+      initContainers:
+        - name: wait-for-migrations
+          image: postgres:16-alpine
+          command: ["sh", "-c"]
+          args:
+            - |
+              # Gate on golang-migrate completing ALL migrations (version >= 4,
+              # not dirty) — not just the `users` table, which exists after 000002
+              # but before 000004 adds the name columns the seed writes.
+              echo "waiting for migrations to reach version >= 4 (clean)..."
+              until psql "$DATABASE_URL" -tAc "SELECT 1 FROM schema_migrations WHERE version >= 4 AND NOT dirty" 2>/dev/null | grep -qx 1; do sleep 2; done
+              echo "migrations complete"
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: platform-secrets, key: DATABASE_URL_TENANT }
+      containers:
+        - name: seed
+          image: unagent/tenant:local
+          imagePullPolicy: Never
+          command: ["/app/seed"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: platform-secrets, key: DATABASE_URL_TENANT }
+            - { name: SEED_EMAIL, value: "admin@demo.com" }
+            - name: SEED_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: platform-secrets, key: SEED_PASSWORD }
+            - { name: GODEBUG, value: "netdns=go" }
