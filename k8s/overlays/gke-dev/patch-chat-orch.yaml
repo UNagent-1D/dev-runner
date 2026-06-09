@@ -1,0 +1,12 @@
+# Dev values from .env.dev (env entries merge by name).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chat-orch
+spec:
+  template:
+    spec:
+      containers:
+        - name: chat-orch
+          env:
+            - { name: CORS_ALLOW_ORIGIN, value: "https://dev.unagent.site" }

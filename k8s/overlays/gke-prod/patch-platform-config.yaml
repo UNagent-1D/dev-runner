@@ -1,0 +1,7 @@
+# Railway prod runs the secure channel ON (.env.prod BACKEND_CHANNEL_ENABLED).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-config
+data:
+  BACKEND_CHANNEL_ENABLED: "true"

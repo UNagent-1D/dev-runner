@@ -10,7 +10,7 @@ ROOT       := ..
 KUBECTL    := kubectl
 # configMapGenerator reads init SQL/migrations from above k8s/, so the default
 # load restrictor must be relaxed. Render then apply.
-KUSTOMIZE  := $(KUBECTL) kustomize --load-restrictor LoadRestrictionsNone .
+KUSTOMIZE  := $(KUBECTL) kustomize --load-restrictor LoadRestrictionsNone platform
 
 # Locally-built images:  name -> build context (relative to umbrella root)
 IMAGES := \
@@ -116,6 +116,53 @@ netcheck:  ## Prove segmentation: same-zone ALLOWED, cross-zone DENIED (ephemera
 	probe frontend          redis           6379  DENY; \
 	probe agent-runtime     email-mongo     27017 DENY
 	@echo ">> ALLOW rows must be REACHABLE; DENY rows must be blocked. (Tip: hubble observe -n $(NS) --verdict DROPPED)"
+
+# ---------------------------------------------------------------------------
+# GKE (project unagent-498915) — overlays/gke-{prod,dev}, one namespace per env.
+# Order per env:  gke-secret -> gke-build (once, shared tag) -> gke-deploy
+# The minikube targets above are untouched; status/verify/netcheck/failover
+# work against GKE with NS=unagent-<env>.
+AR      := us-central1-docker.pkg.dev/unagent-498915/unagent
+TAG     ?= $(shell git -C $(ROOT) rev-parse --short HEAD)
+ENV     ?= prod
+GKE_NS  := unagent-$(ENV)
+GKE_KUSTOMIZE = $(KUBECTL) kustomize --load-restrictor LoadRestrictionsNone overlays/gke-$(ENV)
+
+.PHONY: gke-build
+gke-build:  ## Build + push all images to Artifact Registry as :$(TAG) (host docker, not minikube's)
+	@set -e; \
+	for pair in $(IMAGES); do \
+	  name=$${pair%%:*}; ctx=$${pair#*:}; \
+	  echo ">> building $(AR)/$$name:$(TAG) from $(ROOT)/$$ctx"; \
+	  docker build -t $(AR)/$$name:$(TAG) "$(ROOT)/$$ctx"; \
+	  docker push $(AR)/$$name:$(TAG); \
+	done
+
+.PHONY: gke-secret
+gke-secret:  ## Map .env.$(ENV) -> platform-secrets in unagent-$(ENV) (run before first gke-deploy)
+	$(ROOT)/scripts/gke-secrets.sh $(ENV)
+
+.PHONY: gke-deploy
+gke-deploy:  ## Render overlays/gke-$(ENV), assert GKE-safety, pin :$(TAG), apply, wait for jobs
+	@$(GKE_KUSTOMIZE) > /tmp/gke-render-$(ENV).yaml
+	@grep -q "namespace: $(GKE_NS)" /tmp/gke-render-$(ENV).yaml \
+	  || { echo "!! namespace rename to $(GKE_NS) failed"; exit 1; }
+	@! grep -q "imagePullPolicy: Never" /tmp/gke-render-$(ENV).yaml \
+	  || { echo "!! imagePullPolicy: Never leaked into the GKE render"; exit 1; }
+	@! grep -q "image: unagent/" /tmp/gke-render-$(ENV).yaml \
+	  || { echo "!! a local :local image leaked into the GKE render"; exit 1; }
+	@! grep -q "type: LoadBalancer" /tmp/gke-render-$(ENV).yaml \
+	  || { echo "!! a LoadBalancer Service leaked into the GKE render"; exit 1; }
+	@! grep -q "sk-or-v1-REPLACE_ME" /tmp/gke-render-$(ENV).yaml \
+	  || { echo "!! placeholder Secret leaked into the GKE render"; exit 1; }
+	@# one-shot Jobs carry the image tag in an immutable pod template — drop
+	@# completed ones so a new TAG can re-apply (all three are idempotent)
+	-$(KUBECTL) -n $(GKE_NS) delete job email-mongo-rs-init tenant-migrate tenant-seed --ignore-not-found
+	sed "s/:GKE_TAG/:$(TAG)/g" /tmp/gke-render-$(ENV).yaml | $(KUBECTL) apply -f -
+	@echo ">> waiting for the replica-set init + DB migrations ($(GKE_NS))..."
+	-$(KUBECTL) -n $(GKE_NS) wait --for=condition=complete job/email-mongo-rs-init --timeout=300s
+	-$(KUBECTL) -n $(GKE_NS) wait --for=condition=complete job/tenant-migrate    --timeout=300s
+	-$(KUBECTL) -n $(GKE_NS) wait --for=condition=complete job/tenant-seed       --timeout=300s
 
 .PHONY: failover
 failover:  ## Demonstrate replica-set re-election: delete the current PRIMARY pod

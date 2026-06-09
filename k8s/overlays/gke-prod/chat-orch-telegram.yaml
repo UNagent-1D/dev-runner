@@ -1,0 +1,67 @@
+# Dedicated Telegram poller — Railway parity. The bot token is live in
+# .env.prod, but the main chat-orch runs 2 replicas and two concurrent
+# getUpdates long-polls conflict (Telegram 409). This single-replica copy is
+# the only pod holding TELEGRAM_BOT_TOKEN (one poller per env, like Railway);
+# the main chat-orch pods stay token-less, which disables their loop
+# (chat-orch/src/main.rs). Distinct app label keeps it out of the chat-orch
+# Service. No Service of its own — egress-only workload.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chat-orch-telegram
+  labels: { app: chat-orch-telegram }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: chat-orch-telegram }
+  template:
+    metadata:
+      # net-* labels mirror docker-compose networks (see network/networkpolicies.yaml)
+      labels: { app: chat-orch-telegram, net-orch: "true", net-compliance: "true" }
+    spec:
+      containers:
+        - name: chat-orch
+          image: unagent/chat-orch:local
+          imagePullPolicy: Never
+          ports:
+            - { name: http, containerPort: 3000 }
+          env:
+            - { name: SERVER_HOST, value: "0.0.0.0" }
+            - { name: SERVER_PORT, value: "3000" }
+            - { name: CONVERSATION_CHAT_URL, value: "http://conversation-chat:8082" }
+            - { name: TENANT_SERVICE_URL, value: "http://tenant:8080" }
+            - { name: METRICAS_URL, value: "http://compliance:8091" }
+            - { name: HOSPITAL_MOCK_URL, value: "http://hospital-mock:8080" }
+            - { name: AGENT_RUNTIME_URL, value: "http://agent-runtime:3100" }
+            - { name: USER_AUTH_URL, value: "http://user-auth:8080" }
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: TELEGRAM_BOT_TOKEN } }
+            - { name: TELEGRAM_DEFAULT_TENANT_ID, value: "default-tenant" }
+            - { name: TELEGRAM_DEFAULT_TENANT_SLUG, value: "demo-hospital" }
+            - { name: CORS_ALLOW_ORIGIN, value: "https://unagent.site" }
+            - name: INTERNAL_API_KEY
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: INTERNAL_API_KEY } }
+            - name: OPENAI_API_KEY
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: OPENROUTER_API_KEY } }
+            - name: OPENAI_BASE_URL
+              valueFrom: { configMapKeyRef: { name: platform-config, key: OPENAI_BASE_URL } }
+            - name: OPENAI_DEFAULT_MODEL
+              valueFrom: { configMapKeyRef: { name: platform-config, key: OPENAI_DEFAULT_MODEL } }
+            - name: BACKEND_CHANNEL_ENABLED
+              valueFrom: { configMapKeyRef: { name: platform-config, key: BACKEND_CHANNEL_ENABLED } }
+            - name: BACKEND_CHANNEL_KEY
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: BACKEND_CHANNEL_KEY } }
+            - { name: RUST_LOG, value: "chat_orch=info,tower_http=info" }
+            - name: LOG_FORMAT
+              valueFrom: { configMapKeyRef: { name: platform-config, key: LOG_FORMAT } }
+          readinessProbe:
+            httpGet: { path: /health, port: 3000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 3000 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 500m, memory: 256Mi }

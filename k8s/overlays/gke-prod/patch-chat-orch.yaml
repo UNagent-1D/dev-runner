@@ -1,0 +1,13 @@
+# Prod values from .env.prod (env entries merge by name).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chat-orch
+spec:
+  template:
+    spec:
+      containers:
+        - name: chat-orch
+          env:
+            - { name: CORS_ALLOW_ORIGIN, value: "https://unagent.site" }
+            - { name: TELEGRAM_DEFAULT_TENANT_ID, value: "default-tenant" }

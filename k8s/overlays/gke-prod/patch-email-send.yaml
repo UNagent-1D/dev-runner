@@ -1,0 +1,14 @@
+# Prod values from .env.prod: real bearer auth (EMAIL_AUTH_STUB=false) and the
+# verified SendGrid sender identity.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: email-send
+spec:
+  template:
+    spec:
+      containers:
+        - name: email-send
+          env:
+            - { name: AUTH_STUB, value: "false" }
+            - { name: EMAIL_FROM_DEFAULT, value: "nizulu1998@gmail.com" }

@@ -1,0 +1,12 @@
+# Dev values from .env.dev (sender display name marks dev traffic).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: email-send
+spec:
+  template:
+    spec:
+      containers:
+        - name: email-send
+          env:
+            - { name: EMAIL_FROM_NAME, value: "UNAgent Notifications (dev)" }

@@ -1,0 +1,7 @@
+# Railway dev runs the secure channel ON (.env.dev BACKEND_CHANNEL_ENABLED).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-config
+data:
+  BACKEND_CHANNEL_ENABLED: "true"

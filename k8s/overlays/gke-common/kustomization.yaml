@@ -1,0 +1,93 @@
+# Shared GKE transforms (Component — composed by gke-prod and gke-dev).
+# - retags every locally-built image to Artifact Registry (tag pinned at deploy
+#   time: the GKE_TAG placeholder is sed-replaced by `make gke-deploy`)
+# - flips imagePullPolicy Never -> IfNotPresent (images are pulled, not baked)
+# - frontend becomes the single in-cluster gateway behind the GCLB Ingress
+#   (container-native NEG); the minikube LoadBalancers revert to ClusterIP
+# - drops the placeholder Secret so re-applies never clobber the real
+#   platform-secrets created by scripts/gke-secrets.sh
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+images:
+  - name: unagent/chat-orch
+    newName: us-central1-docker.pkg.dev/unagent-498915/unagent/chat-orch
+    newTag: GKE_TAG
+  - name: unagent/conversation-chat
+    newName: us-central1-docker.pkg.dev/unagent-498915/unagent/conversation-chat
+    newTag: GKE_TAG
+  - name: unagent/agent-runtime
+    newName: us-central1-docker.pkg.dev/unagent-498915/unagent/agent-runtime
+    newTag: GKE_TAG
+  - name: unagent/tenant
+    newName: us-central1-docker.pkg.dev/unagent-498915/unagent/tenant
+    newTag: GKE_TAG
+  - name: unagent/hospital-mock
+    newName: us-central1-docker.pkg.dev/unagent-498915/unagent/hospital-mock
+    newTag: GKE_TAG
+  - name: unagent/compliance
+    newName: us-central1-docker.pkg.dev/unagent-498915/unagent/compliance
+    newTag: GKE_TAG
+  - name: unagent/email-send
+    newName: us-central1-docker.pkg.dev/unagent-498915/unagent/email-send
+    newTag: GKE_TAG
+  - name: unagent/user-auth
+    newName: us-central1-docker.pkg.dev/unagent-498915/unagent/user-auth
+    newTag: GKE_TAG
+  - name: unagent/frontend
+    newName: us-central1-docker.pkg.dev/unagent-498915/unagent/frontend
+    newTag: GKE_TAG
+  - name: unagent/rabbitmq
+    newName: us-central1-docker.pkg.dev/unagent-498915/unagent/rabbitmq
+    newTag: GKE_TAG
+
+patches:
+  # RFC6902 `add` upserts: one wildcard patch per workload kind covers every
+  # container[0] (grafana included, harmlessly — its image is public).
+  - target: { kind: Deployment }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent
+  - target: { kind: StatefulSet, name: rabbitmq }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent
+  # tenant-seed's `seed` container also runs the locally-built tenant image
+  - target: { kind: Job, name: tenant-seed }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent
+
+  # frontend: minikube LoadBalancer -> ClusterIP with a container-native NEG;
+  # the GCLB Ingress (per-env ingress.yaml) fronts it.
+  - target: { kind: Service, name: frontend }
+    patch: |-
+      - op: replace
+        path: /spec/type
+        value: ClusterIP
+      - op: add
+        path: /metadata/annotations
+        value:
+          cloud.google.com/neg: '{"ingress": true}'
+          cloud.google.com/backend-config: '{"default": "frontend-backendconfig"}'
+
+  # pattern #4 demo LB stays minikube-only — never expose conversation-chat
+  # publicly on GKE (and never pay for a second LB).
+  - target: { kind: Service, name: conversation-chat-lb }
+    patch: |-
+      - op: replace
+        path: /spec/type
+        value: ClusterIP
+
+  # The real platform-secrets is created out-of-band by scripts/gke-secrets.sh;
+  # deleting the placeholder here means `make gke-deploy` can never revert
+  # real credentials to the local-dev defaults.
+  - patch: |-
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: platform-secrets
+      $patch: delete

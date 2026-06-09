@@ -1,0 +1,23 @@
+# GKE dev environment — dev.unagent.site, API origin api-dev.unagent.site.
+# Render with:  kubectl kustomize --load-restrictor LoadRestrictionsNone .
+# (or `make -C k8s gke-deploy ENV=dev`)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Renames the base Namespace object and re-namespaces every resource,
+# including the hardcoded `namespace: unagent` on the 12 NetworkPolicies
+# (asserted at deploy time by `make gke-deploy`).
+namespace: unagent-dev
+
+resources:
+  - ../../platform             # the shared platform base (also used by minikube)
+  - ingress.yaml               # GCLB + ManagedCertificate + BackendConfig
+  - chat-orch-telegram.yaml    # single-replica Telegram poller (token holder)
+
+components:
+  - ../gke-common
+
+patches:
+  - path: patch-platform-config.yaml
+  - path: patch-chat-orch.yaml
+  - path: patch-email-send.yaml

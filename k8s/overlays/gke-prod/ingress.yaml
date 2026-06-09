@@ -1,0 +1,40 @@
+# Public entry for the prod environment: the Cloudflare Worker proxies every
+# API path to https://api.unagent.site, which is this GCLB. The frontend nginx
+# behind it is the in-cluster router (its path table mirrors the Worker's).
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: unagent-cert
+spec:
+  domains:
+    - api.unagent.site
+---
+# Attached to the frontend Service via the cloud.google.com/backend-config
+# annotation (see overlays/gke-common). timeoutSec must outlive SSE streams —
+# GCLB's 30s default would kill /v1/chat/stream mid-conversation.
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: frontend-backendconfig
+spec:
+  timeoutSec: 86400
+  healthCheck:
+    type: HTTP
+    requestPath: /
+    port: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: unagent
+  annotations:
+    kubernetes.io/ingress.class: gce
+    kubernetes.io/ingress.global-static-ip-name: unagent-prod-ip
+    networking.gke.io/managed-certificates: unagent-cert
+spec:
+  # No path rules: the frontend nginx routes /v1, /auth, /api, /stats itself.
+  defaultBackend:
+    service:
+      name: frontend
+      port:
+        number: 80
