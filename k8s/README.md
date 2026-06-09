@@ -1,8 +1,9 @@
-# Kubernetes deployment (minikube)
+# Kubernetes deployment (minikube + GKE)
 
 Full-stack Kubernetes deployment of the dev-runner platform, implementing four
 architecture patterns on top of the **existing** services (no new services).
-Verified end-to-end on minikube (docker driver).
+Verified end-to-end on minikube (docker driver) and in production on GKE
+(see the GKE section below and `../docs/DEPLOY-STATE.md`).
 
 ## The four patterns
 
@@ -92,7 +93,9 @@ What the Makefile handles for you:
 - **`kubectl apply -k` does NOT work here.** The `configMapGenerator`s read init
   SQL/migrations from *above* `k8s/`, so kustomize's load restrictor rejects a plain
   `-k`. `make deploy` renders with
-  `kubectl kustomize --load-restrictor LoadRestrictionsNone . | kubectl apply -f -`.
+  `kubectl kustomize --load-restrictor LoadRestrictionsNone platform | kubectl apply -f -`
+  (the base kustomization lives in `k8s/platform/` so the GKE overlays can
+  reference it without a kustomize root cycle).
 - **Images** are tagged `unagent/<svc>:local` with `imagePullPolicy: Never`, built
   into minikube's daemon (`eval $(minikube docker-env)`), so nothing is pushed to a
   registry.
@@ -188,6 +191,30 @@ inherits that pod's Cilium identity) and runs `nc` against a target — e.g.
 (`make verify` / `make failover`) and the full chat flow are unaffected: they
 exercise only same-zone paths (mongo replica-set peers all share `net-email`),
 and `kubectl exec` / health probes never traverse the policy dataplane.
+
+## GKE (production)
+
+The same base deploys to GKE through `overlays/gke-{prod,dev}` — one namespace
+per environment (`unagent-prod` on `unagent.site`, `unagent-dev` on
+`dev.unagent.site`). The overlays retag images to Artifact Registry, flip
+`imagePullPolicy`, demote the minikube LoadBalancers to ClusterIP, and add a
+GCLB Ingress + Google ManagedCertificate + `BackendConfig` (SSE-safe 86400s
+timeout) in front of the frontend nginx gateway, plus a single-replica
+`chat-orch-telegram` poller (two pollers would 409 against Telegram).
+
+```bash
+make gke-secret ENV=prod                 # .env.prod -> platform-secrets (first time / rotation)
+make gke-build  TAG=$(git rev-parse --short HEAD)   # build + push 10 images to AR
+make gke-deploy ENV=prod TAG=<same>      # render overlay, assert, apply, wait for jobs
+make status  NS=unagent-prod             # the minikube targets work with NS=
+make verify  NS=unagent-prod
+make netcheck NS=unagent-prod            # NetworkPolicies are ENFORCED (Dataplane V2 = Cilium)
+make failover NS=unagent-prod
+```
+
+Cluster shape, public IPs, DNS records, and the verified state live in
+`../docs/DEPLOY-STATE.md`. The Cloudflare Worker (`../cloudflare-worker/`)
+serves the SPA and proxies API paths to `api[-dev].unagent.site`.
 
 ## Troubleshooting
 

@@ -21,29 +21,31 @@ binding = "ASSETS"
 not_found_handling = "single-page-application"
 
 # ---------------------------------------------------------------------------
-# dev — bound to dev.<apex>. Worker proxies to Railway dev backends.
+# dev — bound to dev.<apex>. Worker proxies to the GKE dev gateway
+# (unagent-dev namespace; in-cluster frontend nginx routes the paths).
 # ---------------------------------------------------------------------------
 [env.dev]
 name = "unagent-gateway-dev"
 routes = [{ pattern = "dev.unagent.site", custom_domain = true }]
 
 [env.dev.vars]
-BACKEND_ORCH       = "https://chat-orch-dev.up.railway.app"
-BACKEND_TENANT     = "https://tenant-dev-07ad.up.railway.app"
-BACKEND_CHAT       = "https://conversation-chat-dev.up.railway.app"
-BACKEND_COMPLIANCE = "https://compliance-dev-8757.up.railway.app"
-BACKEND_USER_AUTH  = "https://user-auth-dev.up.railway.app"
+BACKEND_ORCH       = "https://api-dev.unagent.site"
+BACKEND_TENANT     = "https://api-dev.unagent.site"
+BACKEND_CHAT       = "https://api-dev.unagent.site"
+BACKEND_COMPLIANCE = "https://api-dev.unagent.site"
+BACKEND_USER_AUTH  = "https://api-dev.unagent.site"
 
 # ---------------------------------------------------------------------------
-# prod — bound to <apex>. Worker proxies to Railway prod backends.
+# prod — bound to <apex>. Worker proxies to the GKE prod gateway
+# (unagent-prod namespace; in-cluster frontend nginx routes the paths).
 # ---------------------------------------------------------------------------
 [env.prod]
 name = "unagent-gateway-prod"
 routes = [{ pattern = "unagent.site", custom_domain = true }]
 
 [env.prod.vars]
-BACKEND_ORCH       = "https://chat-orch-production-29b4.up.railway.app"
-BACKEND_TENANT     = "https://tenant-production-2017.up.railway.app"
-BACKEND_CHAT       = "https://conversation-chat-production-e5aa.up.railway.app"
-BACKEND_COMPLIANCE = "https://compliance-production-7465.up.railway.app"
-BACKEND_USER_AUTH  = "https://user-auth-production-81c6.up.railway.app"
+BACKEND_ORCH       = "https://api.unagent.site"
+BACKEND_TENANT     = "https://api.unagent.site"
+BACKEND_CHAT       = "https://api.unagent.site"
+BACKEND_COMPLIANCE = "https://api.unagent.site"
+BACKEND_USER_AUTH  = "https://api.unagent.site"

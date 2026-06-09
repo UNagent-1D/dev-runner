@@ -1,0 +1,339 @@
+@startuml UNAgent_Deployment_UML
+!theme plain
+title **UNAgent Platform — UML 2.x Deployment Diagram**\nElements: «device», «executionEnvironment», «component», «artifact»\nSolid lines = communication paths · Dashed lines = dependencies / «deploy» / «manifest»
+
+' --------------------------------------------------------------------------
+' Style
+' --------------------------------------------------------------------------
+skinparam shadowing false
+skinparam roundCorner 12
+skinparam defaultFontName "Inter, Helvetica, sans-serif"
+skinparam defaultFontSize 12
+skinparam ArrowColor #444
+skinparam ArrowFontColor #333
+skinparam ArrowFontSize 10
+skinparam NodeBackgroundColor #F0F4FF
+skinparam NodeBorderColor #4A6FB5
+skinparam ComponentBackgroundColor #FFF8E1
+skinparam ComponentBorderColor #B89800
+skinparam ArtifactBackgroundColor #F5F5F5
+skinparam ArtifactBorderColor #777
+skinparam DatabaseBackgroundColor #FFF6E0
+skinparam CloudBackgroundColor #EAF6FF
+skinparam NoteBackgroundColor #FFFCEC
+skinparam NoteBorderColor #C8B36A
+skinparam Style strictuml
+
+' ==========================================================================
+' DEVICE NODES (physical/virtual hardware — rounded boxes per UML 2.x)
+' ==========================================================================
+
+node "End-user laptop" <<device>> as devClient {
+  component "Browser engine\n(Chromium / Firefox)" <<executionEnvironment>> as browserEE
+}
+
+node "Mobile / desktop" <<device>> as devTg {
+  component "Telegram client" <<executionEnvironment>> as tgClient
+}
+
+' ==========================================================================
+' CLOUDFLARE EDGE (managed «device»)
+' ==========================================================================
+
+node "Cloudflare edge\n(global PoPs)" <<device>> as devCf {
+
+  component "Cloudflare Pages\nproject: unagent-frontend\nhostname: app.<domain>" <<executionEnvironment>> as cfPages {
+    artifact "FrontEnd build\n(Vite static bundle)" as artFeBundle
+  }
+
+  component "Cloudflare Tunnel\nUUID: <tunnel-uuid>" <<executionEnvironment>> as cfTunnel {
+    artifact "ingress rules\n(~/.cloudflared/config.yml)" as artCfdConfig
+  }
+
+  database "Cloudflare DNS\n(zone records)" as cfDns
+}
+
+' ==========================================================================
+' HOST DEVICE  (laptop  or  Oracle Cloud A1.Flex 4 OCPU / 24 GB)
+' ==========================================================================
+
+node "Host\nLinux (Arch / Ubuntu 22.04)" <<device>> as devHost {
+
+  component "Docker engine 29.x\n+ containerd 2.2.3 (pinned)\n+ runc 1.4" <<executionEnvironment>> as dockerEE {
+
+    ' ------------------------------------------------------------
+    ' Bridge network
+    ' ------------------------------------------------------------
+    component "Docker network: archsoft (bridge driver)" <<executionEnvironment>> as netBridge {
+
+      ' ----------- INFRASTRUCTURE TIER -----------
+      package "Infrastructure tier" {
+
+        component "redis container\nimage: redis:7-alpine\n:6379 (internal)" <<executionEnvironment>> as ctnRedis {
+          artifact "redis-server" as artRedis
+          database "session cache" as redisDb
+        }
+
+        component "rabbitmq container\nbuild ./UN_message_broker_mb\nbase: rabbitmq:3-management\n:5672 / :15672" <<executionEnvironment>> as ctnRmq {
+          artifact "rabbitmq-server" as artRmq
+          artifact "definitions.json\n(pre-declares queues)" as artRmqDefs
+          queue "chat_requests" as qReq
+          queue "chat_results" as qRes
+        }
+
+        component "hospital-postgres container\nimage: postgres:16-alpine\n:5432 (internal)" <<executionEnvironment>> as ctnHpg {
+          artifact "postgres binary" as artHpgBin
+          artifact "schema.sql\n(/docker-entrypoint-initdb.d)" as artHpgSchema
+          artifact "seed.sql" as artHpgSeed
+          database "doctors\nappointments" as hpgDb
+        }
+
+        component "email-mongo container\nimage: mongo:7\n:27017 (internal)" <<executionEnvironment>> as ctnEmongo {
+          artifact "mongod binary" as artMongoBin
+          database "email_audit\n.email_events" as emongoDb1
+          database "UN_compliance_db\n.audit_logs" as emongoDb2
+        }
+      }
+
+      ' ----------- APPLICATION TIER -----------
+      package "Application tier" {
+
+        component "tenant container" <<executionEnvironment>> as ctnTenant {
+          artifact "tenant\n(Go static binary)\nbuilder: golang:1.25-alpine\nruntime: alpine:3.20" as artTenant
+          component "Auth handler\n(JWT HS256)" as cTenantAuth
+          component "Tenant admin API\n(Gin)" as cTenantApi
+        }
+
+        component "hospital-mock container" <<executionEnvironment>> as ctnHosp {
+          artifact "app.py + db.py\n(Flask + psycopg2)\nbase: python:3.12-slim" as artHosp
+          component "Doctor / appointment\nendpoints" as cHosp
+        }
+
+        component "agent-runtime container" <<executionEnvironment>> as ctnAgent {
+          artifact "dist/index.js\n(TypeScript bundle)\nbase: node:20-alpine" as artAgent
+          component "ACR stub" as cAgentAcr
+          component "Tenant stub" as cAgentTenant
+          component "Session proxy" as cAgentProxy
+          component "AMQP broker client" as cAgentBroker
+        }
+
+        component "conversation-chat container" <<executionEnvironment>> as ctnConv {
+          artifact "conversation-chat\n(Go static binary)\nbuilder: golang:1.24-alpine\nruntime: alpine:3.20" as artConv
+          component "Session service" as cConvSess
+          component "Worker (AMQP)" as cConvWorker
+          component "Mongo + Redis adapters" as cConvDb
+        }
+
+        component "chat-orch container" <<executionEnvironment>> as ctnOrch {
+          artifact "chat-orch\n(Rust binary)\nbuilder: rust:1.88-slim\nruntime: debian:bookworm-slim" as artOrch
+          component "Axum router\n(/v1/chat, /v1/chat/stream, /v1/feedback)" as cOrchHttp
+          component "SSE hub" as cOrchSse
+          component "LLM tool loop" as cOrchLlm
+          component "Telegram long-poll" as cOrchTg
+        }
+
+        component "compliance container" <<executionEnvironment>> as ctnComp {
+          artifact "main.py + tests\n(FastAPI + motor)\nbase: python:3.12-slim" as artComp
+          component "Legacy Metricas API\n(/conversation/chat,\n/feedback/csat,\n/stats/kpis,\n/stats/timeseries)" as cCompLegacy
+          component "Compliance audit\n(/v1/event, /v1/feedback)" as cCompAudit
+        }
+
+        component "email-send container" <<executionEnvironment>> as ctnEmail {
+          artifact "app.jar\n(Spring Boot 3.3)\nbuilder: maven:3.9-eclipse-temurin-21\nruntime: eclipse-temurin:21-jre-alpine" as artEmail
+          component "EmailController" as cEmailCtl
+          component "SendGridProvider" as cEmailProv
+          component "Audit repository" as cEmailRepo
+        }
+
+        component "frontend container" <<executionEnvironment>> as ctnFe {
+          artifact "Vite bundle\nbaked with VITE_*\nbuilder: node:20-alpine\nruntime: nginx:1.27-alpine" as artFe
+          component "nginx static server" as cFeNginx
+        }
+      }
+    }
+
+    ' --------- volumes (storage artifacts on the host) ---------
+    artifact "hospital-postgres-data\n(/var/lib/postgresql/data)" as artVolH
+    artifact "email-mongo-data\n(/data/db)" as artVolE
+  }
+}
+
+' ==========================================================================
+' EXTERNAL MANAGED SERVICES (each is its own «device»)
+' ==========================================================================
+
+node "Supabase (hosted)" <<device>> as devSb {
+  component "PostgreSQL\nsession pooler (IPv4)\nsslmode=require" <<executionEnvironment>> as eeSb {
+    database "tenants\nusers\nuser_tenants" as sbDb
+  }
+}
+
+node "MongoDB Atlas (hosted)" <<device>> as devAtlas {
+  component "MongoDB\nSRV cluster" <<executionEnvironment>> as eeAtlas {
+    database "${MONGO_DB:-conversatory}\n.sessions, .turns" as atlasDb
+  }
+}
+
+node "OpenRouter" <<device>> as devOR {
+  component "openrouter.ai/api/v1\nLLM gateway" <<executionEnvironment>> as eeOR
+}
+
+node "SendGrid" <<device>> as devSG {
+  component "api.sendgrid.com/v3" <<executionEnvironment>> as eeSG
+}
+
+node "Telegram" <<device>> as devTgApi {
+  component "api.telegram.org\nBot API" <<executionEnvironment>> as eeTgApi
+}
+
+' ==========================================================================
+' COMMUNICATION PATHS  (solid lines, with «protocol» stereotypes)
+' ==========================================================================
+
+devClient -- devCf : <<HTTPS>>\nGET app.<domain>\n(static bundle, edge-cached)
+devClient -- devCf : <<HTTPS>>\napi/orch/chat/metrics/email.<domain>
+
+devCf -- devHost : <<HTTPS / mTLS>>\noutbound from cloudflared\nto Cloudflare edge
+
+devTg -- devTgApi : <<HTTPS>>
+devHost -- devTgApi : <<HTTPS>>\nlong-poll getUpdates
+
+devHost -- devSb    : <<TCP/TLS 5432>>
+devHost -- devAtlas : <<SRV+TLS 27017>>
+devHost -- devOR    : <<HTTPS>>
+devHost -- devSG    : <<HTTPS>>
+
+' Intra-host (Docker network) — these are still communication paths
+' but logically inside the Host device.
+
+cFeNginx ..> cTenantApi : <<HTTP>>
+cFeNginx ..> cOrchHttp  : <<HTTP / SSE>>
+cFeNginx ..> cConvSess  : <<HTTP>>
+cFeNginx ..> cCompLegacy: <<HTTP>>
+
+cOrchHttp ..> cAgentProxy : <<HTTP>>
+cOrchHttp ..> cTenantAuth : <<HTTP>> JWT validate
+cOrchHttp ..> cCompLegacy : <<HTTP>>
+cOrchLlm  ..> cHosp       : <<HTTP>>
+cOrchLlm  ..> eeOR        : <<HTTPS>>
+cOrchTg   ..> eeTgApi     : <<HTTPS>>
+
+cAgentProxy  ..> cConvSess : <<HTTP>>
+cAgentProxy  ..> cHosp     : <<HTTP>>
+cAgentBroker ..> qReq      : <<AMQP>>
+cAgentBroker ..> qRes      : <<AMQP>>
+
+cConvSess   ..> redisDb  : <<TCP>>
+cConvSess   ..> atlasDb  : <<SRV+TLS>>
+cConvWorker ..> qReq     : <<AMQP>> consume
+cConvWorker ..> qRes     : <<AMQP>> publish
+cConvDb     ..> eeOR     : <<HTTPS>> tool execution
+
+cTenantApi  ..> sbDb : <<TCP/TLS>> session pooler
+
+cHosp       ..> hpgDb : <<TCP>> psycopg2
+cCompAudit  ..> emongoDb2 : <<TCP>> motor
+cEmailRepo  ..> emongoDb1 : <<TCP>> mongo-driver
+cEmailProv  ..> eeSG      : <<HTTPS>>
+
+' ==========================================================================
+' MANIFEST RELATIONSHIPS  («manifest» — artifact realises a component)
+' ==========================================================================
+
+artFeBundle  ..> cFeNginx     : <<manifest>>
+artTenant    ..> cTenantAuth  : <<manifest>>
+artTenant    ..> cTenantApi   : <<manifest>>
+artHosp      ..> cHosp        : <<manifest>>
+artAgent     ..> cAgentAcr    : <<manifest>>
+artAgent     ..> cAgentTenant : <<manifest>>
+artAgent     ..> cAgentProxy  : <<manifest>>
+artAgent     ..> cAgentBroker : <<manifest>>
+artConv      ..> cConvSess    : <<manifest>>
+artConv      ..> cConvWorker  : <<manifest>>
+artConv      ..> cConvDb      : <<manifest>>
+artOrch      ..> cOrchHttp    : <<manifest>>
+artOrch      ..> cOrchSse     : <<manifest>>
+artOrch      ..> cOrchLlm     : <<manifest>>
+artOrch      ..> cOrchTg      : <<manifest>>
+artComp      ..> cCompLegacy  : <<manifest>>
+artComp      ..> cCompAudit   : <<manifest>>
+artEmail     ..> cEmailCtl    : <<manifest>>
+artEmail     ..> cEmailProv   : <<manifest>>
+artEmail     ..> cEmailRepo   : <<manifest>>
+
+' ==========================================================================
+' DEPLOY RELATIONSHIPS  («deploy» — artifact deployed to node)
+' ==========================================================================
+
+artHpgSchema ..> ctnHpg : <<deploy>>\nfirst-boot init
+artHpgSeed   ..> ctnHpg : <<deploy>>
+artRmqDefs   ..> ctnRmq : <<deploy>>
+
+' ==========================================================================
+' DEPENDENCIES  (dashed — depends_on conditions in compose)
+' ==========================================================================
+
+ctnHosp  ..> ctnHpg     : <<healthy>>
+ctnConv  ..> ctnRedis   : <<healthy>>
+ctnConv  ..> ctnAgent   : <<started>>
+ctnConv  ..> ctnRmq     : <<healthy>>
+ctnAgent ..> ctnHosp    : <<started>>
+ctnAgent ..> ctnRmq     : <<healthy>>
+ctnOrch  ..> ctnAgent   : <<started>>
+ctnOrch  ..> ctnConv    : <<started>>
+ctnOrch  ..> ctnHosp    : <<started>>
+ctnFe    ..> ctnTenant  : <<healthy>>
+ctnFe    ..> ctnConv    : <<started>>
+ctnComp  ..> ctnEmongo  : <<healthy>>
+ctnEmail ..> ctnEmongo  : <<healthy>>
+
+' --- volume bindings (dashed «persists») ---
+ctnHpg    ..> artVolH : <<persists>>
+ctnEmongo ..> artVolE : <<persists>>
+
+' ==========================================================================
+' Notes
+' ==========================================================================
+
+note right of cfTunnel
+  **Why no inbound port forward**
+  cloudflared opens an outbound TCP
+  connection to Cloudflare's edge.
+  The Host needs only port 22 open
+  for SSH; everything else is brokered
+  through the tunnel.
+end note
+
+note bottom of cfPages
+  Pages env vars are baked at **build**
+  time (Vite). Changing the API URLs
+  requires triggering a redeploy.
+end note
+
+note bottom of ctnComp
+  Back-compat with the legacy Metricas
+  wire contract. KPIs are in-memory
+  (reset on restart); audit log persists
+  to email-mongo via motor.
+end note
+
+note bottom of ctnOrch
+  In-memory **SessionStore**
+  (HashMap<sid, Vec<ChatMessage>>).
+  History eventually written to
+  conversation-chat → MongoDB Atlas.
+end note
+
+note right of ctnRmq
+  Async path:
+  agent-runtime ⇄ chat_requests/results ⇄ conversation-chat::worker
+  Synchronous path: chat-orch HTTP loop.
+end note
+
+note bottom of devSb
+  Always use **Session Pooler** URI,
+  not the Direct URL — direct is
+  IPv6-only on the free tier.
+end note
+
+@enduml

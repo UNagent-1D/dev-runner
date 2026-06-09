@@ -554,20 +554,20 @@ src/main/java/co/edu/unagent/emailsend/
 
 ## 7. Data stores
 
-In **production on Railway** all six stateful pieces are self-hosted Railway services (one per environment) with attached volumes — no external SaaS. In **local dev** the same images run inside `docker-compose.yml`. The `.env.dev` / `.env.prod` files in the umbrella point at Railway-internal hostnames; the local `.env` points at the compose service names.
+In **production on GKE** all six stateful pieces run as StatefulSets with PVCs, one set per namespace (`unagent-prod`, `unagent-dev`) — no external SaaS. In **local dev** the same images run inside `docker-compose.yml`. The `.env.dev` / `.env.prod` files feed `scripts/gke-secrets.sh`, which rebuilds connection strings against k8s service DNS; the local `.env` points at the compose service names.
 
-| Store | Local (compose) | Prod / dev (Railway) | Purpose |
+| Store | Local (compose) | Prod / dev (GKE, per namespace) | Purpose |
 |---|---|---|---|
-| Postgres | `tenant-postgres` (or Supabase if you kept the legacy `.env`) | `tenant-postgres` Railway service (`postgres:16-alpine` + `Tenant/sql/init_schema.sql`) | Tenant auth DB — `tenants`, `users`, `user_tenants` |
-| MongoDB | conversation-chat → Atlas (legacy `.env`) | `conversation-mongo` Railway service (`mongo:7`) | conversation-chat sessions + turn history |
-| MongoDB | `email-mongo` | `email-mongo` Railway service (`mongo:7`) | UN_email_send_ms `email_audit.email_events`; Compliance `UN_compliance_db.audit_logs` |
-| Postgres | `hospital-postgres` | `hospital-postgres` Railway service (`postgres:16-alpine` + `Hospital-MP/{schema,seed}.sql`) | Hospital-MP doctors + appointments |
-| Redis | `redis` | `redis` Railway service (`redis:7-alpine`) | conversation-chat session cache |
-| RabbitMQ | `rabbitmq` (from `UN_message_broker_mb`) | `rabbitmq` Railway service (same custom image) | chat_requests / chat_results queues for the async worker path |
+| Postgres | `tenant-postgres` | `tenant-postgres` StatefulSet (`postgres:16-alpine` + init SQL via configMapGenerator) | Tenant auth DB — `tenants`, `users`, `user_tenants` + `user_auth` DB |
+| MongoDB | `conversation-mongo` | `conversation-mongo` StatefulSet (`mongo:7`, single node) | conversation-chat sessions + turn history |
+| MongoDB | `email-mongo` | `email-mongo` StatefulSet ×3 — replica set `rs0` (pattern #1) | UN_email_send_ms `email_audit.email_events`; Compliance `UN_compliance_db.audit_logs` |
+| Postgres | `hospital-postgres` | `hospital-postgres` StatefulSet (`postgres:16-alpine` + `Hospital-MP/{schema,seed}.sql`) | Hospital-MP doctors + appointments |
+| Redis | `redis` | `redis` StatefulSet ×2 — primary/replica, client Service pinned to `redis-0` | conversation-chat session cache |
+| RabbitMQ | `rabbitmq` (from `UN_message_broker_mb`) | `rabbitmq` StatefulSet (same custom image) | chat_requests / chat_results queues for the async worker path |
 | in-memory | chat-orch | chat-orch | SessionStore (per-process) — ❌ reset on restart |
 | in-memory | Compliance | Compliance | tenantStats + daily buckets — ❌ reset on restart |
 
-Init scripts for `tenant-postgres` and `hospital-postgres` are baked into custom Dockerfiles at `scripts/data-stores/`. Postgres applies them once against an empty volume on first boot. Re-seed by deleting the Railway volume (or, locally, by dropping the compose volume).
+On GKE the init SQL is mounted from configMapGenerators (`k8s/platform/kustomization.yaml`); Postgres applies it once against an empty volume on first boot. Re-seed by deleting the PVC + pod (or, locally, by dropping the compose volume). `scripts/data-stores/` still hosts `user-auth-init.sql` (consumed by both kustomize and the compose Dockerfiles).
 
 ---
 
@@ -678,83 +678,41 @@ Features people ask about that aren't built yet:
 
 ## 11.1 Deployment
 
-Local dev: `docker compose up --build -d` is the only blessed path.
+Local dev: `docker compose up --build -d` is the blessed path; `make -C k8s
+start build deploy` is the minikube equivalent (see `k8s/README.md`).
 
-Production target: **Railway (Hobby) + Cloudflare**. Every backend and every
-data store runs as a Railway service in two environments (`dev`, `prod`).
-The FrontEnd ships to a Cloudflare Worker that doubles as the single-origin
-gateway (it serves the Vite SPA *and* reverse-proxies API paths to Railway
-backends — same routing rules as `FrontEnd/nginx.conf:41-87`).
+Production: **GKE + Cloudflare Worker** (migrated off Railway 2026-06-09;
+the Railway project was deleted). Live state, IPs, and verification notes:
+`docs/DEPLOY-STATE.md`.
 
-- **Cloudflare Worker** (`cloudflare-worker/`) — apex `<apex>` → prod env,
-  `dev.<apex>` → dev env. TLS is provisioned by Cloudflare; bindings live in
-  `wrangler.toml`. The Worker has no nginx; routing is in `src/index.ts`.
-- **Railway** hosts 8 application services + 6 self-hosted data stores
-  (Redis, hospital-postgres, email-mongo, RabbitMQ, tenant-postgres,
-  conversation-mongo). The data stores have Railway volumes and replace
-  the previous Supabase + Atlas dependencies entirely.
-- **Single source of truth** for config: `.env.dev` / `.env.prod` in the
-  umbrella (gitignored). The bootstrap uploads them as Railway shared
-  variables; services reference keys via `${{ shared.KEY }}`.
-- **CI/CD:** *transitioning to per-repo*. The end state — and the
-  architectural rule — is that **each service repo owns its own
-  `.github/workflows/` for CI + deploy**. The umbrella is the local-dev
-  orchestrator, nothing more. See §11.2 below for the migration map.
+- **Cluster:** `unagent` in GCP project `unagent-498915` (Standard, zonal
+  `us-central1-a`, 3× e2-standard-2, **Dataplane V2** — Cilium, so the
+  NetworkPolicies in `k8s/network/` are enforced). Two namespaces:
+  `unagent-prod` (apex) and `unagent-dev`.
+- **Manifests:** the minikube base (`k8s/platform/` + `k8s/{base,data,apps,
+  jobs,network}/`) plus kustomize overlays `k8s/overlays/gke-{prod,dev}`
+  (AR image retags, GCLB Ingress + ManagedCertificate + SSE-safe
+  BackendConfig, per-env config, single-replica `chat-orch-telegram`
+  poller).
+- **Cloudflare Worker** (`cloudflare-worker/`) — apex → prod, `dev.<apex>`
+  → dev. It serves the SPA and proxies every `BACKEND_*` route to that
+  env's API origin (`api.unagent.site` / `api-dev.unagent.site`), which is
+  a GCLB in front of the in-cluster frontend nginx (the actual router).
+  Deploy with `npx wrangler deploy --env dev|prod`.
+- **Config:** `.env.dev` / `.env.prod` (gitignored) remain the source of
+  truth. `scripts/gke-secrets.sh <env>` maps them into the
+  `platform-secrets` Secret, rebuilding DSNs against k8s DNS.
+- **Ship a change:** `make -C k8s gke-build TAG=$(git rev-parse --short
+  HEAD)` then `make -C k8s gke-deploy ENV=dev|prod TAG=<same>`. There is
+  deliberately **no CI/CD** — deploys are manual make targets.
 
-First-time setup is one command: `scripts/bootstrap.sh`. The companion doc
-`scripts/bootstrap.md` lists the three human checklists (env files, GitHub
-secrets, Cloudflare zone). After that, every change ships via `git push`.
+### 11.2 CI/CD (retired)
 
-The earlier Oracle Cloud + Cloudflare Pages plan is retired — Railway
-Hobby covers the resources comfortably and removes the OCI / cloudflared
-moving parts.
-
-### 11.2 Per-repo CI/CD (in progress)
-
-**Principle:** CI/CD lives in the repo whose code it builds. The umbrella
-holds only local-dev tooling (`docker-compose.yml`, `scripts/bootstrap.sh`,
-`.env.example`, this playbook). No deploy workflows. No matrix.
-
-**Convention for each migrated service:**
-- `.github/workflows/ci.yml` — runs build/test/lint for the service on
-  every push + PR. No cross-repo dependencies; checkout is the service repo
-  only, no submodules, no PAT.
-- `.github/workflows/deploy.yml` — `push: branches: [main]` deploys to
-  Railway `dev`; `workflow_dispatch` with `env=prod` deploys to Railway
-  `Production`. Manual prod promotion until a cross-service gate is designed.
-- Repo secrets (per service): `RAILWAY_TOKEN_DEV`, `RAILWAY_TOKEN_PROD`.
-- Repo variables (per service): `RAILWAY_<ENV>_<SVC>_URL` for the
-  post-deploy smoke step.
-- **Railway dashboard one-time flip** (when migrating a service): service
-  → Settings → Source → **Dockerfile Path**: change from
-  `<submodule>/Dockerfile` (umbrella-relative) to `Dockerfile` (repo-root).
-  Required in both `dev` and `prod` environments. CLI can't do this reliably
-  per `scripts/bootstrap.md` §Manual fallbacks.
-
-**Migration status (2026-05-20):**
-
-| Service | Repo | Status |
-|---|---|---|
-| chat-orch | `UNagent-1D/chat-orch` | ✅ per-repo CI/CD live; removed from umbrella matrix |
-| Tenant | `UNagent-1D/Tenant` | ⏳ umbrella matrix |
-| conversation-chat | `UNagent-1D/conversation-chat` | ⏳ umbrella matrix |
-| agent-runtime | `UNagent-1D/agent-runtime` | ⏳ umbrella matrix |
-| Hospital-MP | `UNagent-1D/Hospital-MP` | ⏳ umbrella matrix |
-| UN_email_send_ms | `UNagent-1D/UN_email_send_ms` | ⏳ umbrella matrix |
-| UN_message_broker_mb | `UNagent-1D/UN_message_broker_mb` | ⏳ umbrella matrix |
-| Compliance | in-tree (`Compliance/`) | ⏳ spin out to own repo, then migrate |
-| Cloudflare Worker | in-tree (`cloudflare-worker/`) | ⏳ move into FrontEnd repo, then migrate |
-| FrontEnd | `UNagent-1D/FrontEnd` | ⏳ umbrella matrix (will also own the Worker post-move) |
-
-**End state:** umbrella `.github/workflows/` either disappears or shrinks
-to a single `compose-validate.yml` that lints `docker-compose.yml`. The
-existing `deploy-dev.yml`, `deploy-prod.yml`, `pr-gate.yml`, and the bulk
-of `ci.yml` are on a deathwatch — they exit one service-migration at a
-time.
-
-**`User-Auth` adoption (deferred):** `UNagent-1D/User-Auth` exists as a
-standalone Go service but has never been wired into the umbrella. When it
-is, it gets per-repo CI/CD from day one — no umbrella-matrix detour.
+The per-repo Railway CI/CD program ended with the Railway teardown. The
+umbrella has no `.github/workflows/`. Service repos may keep their
+`ci.yml` (build/test), but any `deploy.yml` targeting Railway is a dead
+end and can be deleted next time each repo is touched. If CI/CD returns,
+it should target the GKE flow (`gke-build`/`gke-deploy`) from each repo.
 
 ---
 
