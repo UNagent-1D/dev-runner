@@ -15,8 +15,18 @@ Verified end-to-end on minikube (docker driver).
 
 `conversation-chat` was chosen for the cluster pattern (over `chat-orch`) because
 its state is externalized to Redis + conversation-mongo and its RabbitMQ worker
-uses competing-consumers, so replicas are interchangeable. `chat-orch` stays at
-`replicas: 1` (in-memory SessionStore + per-process SSE).
+uses competing-consumers, so replicas are interchangeable.
+
+Other workloads run 2 replicas for availability, each shaped around its state:
+
+- `chat-orch` — active/standby. Its SessionStore + SSE hub are in-memory and
+  per-process, so the `chat-orch` Service uses `sessionAffinity: ClientIP` to
+  pin all traffic (chat POST + matching SSE stream) to one pod; the spare takes
+  over if the active pod dies (sessions are lost — they're in-memory anyway).
+- `agent-runtime` — two interchangeable stateless pods behind the Service.
+- `redis` — primary/replica StatefulSet (`redis-1` runs `--replicaof redis-0`);
+  the client-facing `redis` Service pins to `redis-0`, so clients are untouched
+  and `redis-1` holds a live copy.
 
 ## Layout
 

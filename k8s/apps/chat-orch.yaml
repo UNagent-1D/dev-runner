@@ -1,5 +1,8 @@
-# Front-door orchestrator. replicas: 1 — it holds an in-memory SessionStore and a
-# per-process SSE hub (/v1/chat/stream), so it is NOT horizontally replicated.
+# Front-door orchestrator. replicas: 2 in an active/standby shape: it holds an
+# in-memory SessionStore and a per-process SSE hub (/v1/chat/stream), so a
+# session's POST /v1/chat and its SSE stream must land on the SAME pod. The
+# Service below uses sessionAffinity: ClientIP to pin all traffic to one pod;
+# the second pod is a warm spare that takes over if the active one dies.
 # Reached publicly through the frontend nginx proxy (/v1/*).
 apiVersion: apps/v1
 kind: Deployment
@@ -7,7 +10,7 @@ metadata:
   name: chat-orch
   labels: { app: chat-orch }
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels: { app: chat-orch }
   template:
@@ -67,5 +70,11 @@ metadata:
   labels: { app: chat-orch }
 spec:
   selector: { app: chat-orch }
+  # All traffic arrives from the frontend nginx pod, so ClientIP affinity pins
+  # every request (chat POST + matching SSE stream) to a single chat-orch pod,
+  # keeping the in-memory SessionStore/SseHub consistent per session.
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP: { timeoutSeconds: 10800 }
   ports:
     - { name: http, port: 3000, targetPort: 3000 }

@@ -1,11 +1,12 @@
 # ACR stub + tenant stub + session proxy. Bridges chat-orch → conversation-chat.
+# Stateless — replicas: 2 removes the single-pod funnel on the chat path.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: agent-runtime
   labels: { app: agent-runtime }
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels: { app: agent-runtime }
   template:

@@ -1,23 +1,42 @@
 # Redis — conversation-chat externalized session cache (redis://redis:6379/1).
 # This externalized state is what makes conversation-chat horizontally
 # replicable (pattern #3).
+# Runs as a 2-member primary/replica StatefulSet: redis-1 follows redis-0 via
+# --replicaof. The client-facing `redis` Service pins to redis-0 so reads and
+# writes never split across instances; redis-1 holds a live copy of the data.
 apiVersion: v1
 kind: Service
 metadata:
   name: redis
   labels: { app: redis }
 spec:
+  selector:
+    app: redis
+    statefulset.kubernetes.io/pod-name: redis-0
+  ports:
+    - { name: redis, port: 6379, targetPort: 6379 }
+---
+# Headless service: gives the replica a stable DNS name for the primary
+# (redis-0.redis-headless).
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-headless
+  labels: { app: redis }
+spec:
+  clusterIP: None
   selector: { app: redis }
   ports:
     - { name: redis, port: 6379, targetPort: 6379 }
 ---
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: redis
   labels: { app: redis }
 spec:
-  replicas: 1
+  serviceName: redis-headless
+  replicas: 2
   selector:
     matchLabels: { app: redis }
   template:
@@ -28,6 +47,18 @@ spec:
       containers:
         - name: redis
           image: redis:7-alpine
+          env:
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+          command:
+            - sh
+            - -c
+            - |
+              if [ "$POD_NAME" = "redis-0" ]; then
+                exec redis-server
+              else
+                exec redis-server --replicaof redis-0.redis-headless 6379
+              fi
           ports:
             - { name: redis, containerPort: 6379 }
           readinessProbe:
