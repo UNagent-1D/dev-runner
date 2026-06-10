@@ -273,6 +273,8 @@ services:
     networks:
       - orch_net
       - chat_db_net
+      # email_net: appointment-confirmation emails POST to email-send:8080
+      - email_net
 
   agent-runtime:
     build:

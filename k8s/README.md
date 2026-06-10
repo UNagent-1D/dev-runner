@@ -172,7 +172,7 @@ share a network**. The same boundary is reproduced here.
 | `net-orch` | orch_net | frontend, chat-orch, conversation-chat, agent-runtime, tenant, hospital-mock, user-auth, rabbitmq |
 | `net-tenant` | tenant_net | frontend, tenant, email-send, user-auth |
 | `net-compliance` | compliance_net | frontend, chat-orch, compliance, grafana |
-| `net-email` | email_net | email-send, user-auth, email-mongo, email-mongo-rs-init |
+| `net-email` | email_net | email-send, user-auth, email-mongo, email-mongo-rs-init, conversation-chat (appointment-confirmation emails) |
 | `net-tenant-db` | tenant_db_net | tenant, user-auth, tenant-postgres, tenant-migrate, tenant-seed |
 | `net-chat-db` | chat_db_net | conversation-chat, redis, conversation-mongo |
 | `net-hospital-db` | hospital_db_net | hospital-mock, hospital-postgres |

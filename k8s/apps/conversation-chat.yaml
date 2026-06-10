@@ -17,7 +17,9 @@ spec:
   template:
     metadata:
       # net-* labels mirror docker-compose networks (see network/networkpolicies.yaml)
-      labels: { app: conversation-chat, net-orch: "true", net-chat-db: "true" }
+      # net-email: the appointment-confirmation side effect + the LLM's
+      # send_confirmation_email tool both POST to email-send:8080.
+      labels: { app: conversation-chat, net-orch: "true", net-chat-db: "true", net-email: "true" }
     spec:
       # main.go log.Fatals if Redis/Mongo are unreachable at boot, so gate startup.
       initContainers:
