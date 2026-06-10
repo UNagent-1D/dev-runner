@@ -10,3 +10,7 @@ spec:
         - name: email-send
           env:
             - { name: EMAIL_FROM_NAME, value: "UNAgent Notifications (dev)" }
+            # The base default noreply@unagent.local is NOT a SendGrid-verified
+            # sender (silently dropped); OTP codes must really deliver.
+            - { name: EMAIL_FROM_DEFAULT, value: "nizulu1998@gmail.com" }
+            - { name: SENDGRID_SANDBOX_MODE, value: "false" }

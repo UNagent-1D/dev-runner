@@ -1,12 +1,17 @@
 # ACR stub + tenant stub + session proxy. Bridges chat-orch → conversation-chat.
-# Stateless — replicas: 2 removes the single-pod funnel on the chat path.
+# replicas: 1 — the HTTP proxy is stateless, but the Telegram jobs broker
+# (src/broker/jobs.ts) keeps the pending-job registry in process memory:
+# register/wait/resolve must all hit the SAME pod, and the chat_results
+# consumer must be the pod holding the waiter. Two replicas split that state
+# and every Telegram turn "times out". Scale only after the registry moves
+# to Redis.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: agent-runtime
   labels: { app: agent-runtime }
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels: { app: agent-runtime }
   template:

@@ -21,3 +21,4 @@ patches:
   - path: patch-platform-config.yaml
   - path: patch-chat-orch.yaml
   - path: patch-email-send.yaml
+  - path: patch-user-auth.yaml

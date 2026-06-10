@@ -1,0 +1,13 @@
+# OTP sender must be the SendGrid-VERIFIED identity, matching email-send's
+# EMAIL_FROM_DEFAULT — unverified senders are silently dropped by SendGrid.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-auth
+spec:
+  template:
+    spec:
+      containers:
+        - name: user-auth
+          env:
+            - { name: AUTH_FROM_EMAIL, value: "nizulu1998@gmail.com" }

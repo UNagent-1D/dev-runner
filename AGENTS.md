@@ -189,7 +189,7 @@ Per-service env (injected by `docker-compose.yml`):
 
 - chat-orch: `CONVERSATION_CHAT_URL`, `TENANT_SERVICE_URL`,
   `METRICAS_URL`, `HOSPITAL_MOCK_URL`, `OPENAI_BASE_URL`,
-  `OPENAI_DEFAULT_MODEL` (default `nvidia/nemotron-3-super-120b-a12b:free`),
+  `OPENAI_DEFAULT_MODEL` (default `deepseek/deepseek-v4-flash`),
   `AGENT_RUNTIME_URL` (`http://agent-runtime:3100`),
   `CORS_ALLOW_ORIGIN`, `RUST_LOG`, `LOG_FORMAT`.
 - agent-runtime: `PORT` (default `3100`), `CONVERSATION_CHAT_URL`

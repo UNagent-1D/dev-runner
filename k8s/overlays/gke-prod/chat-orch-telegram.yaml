@@ -36,7 +36,9 @@ spec:
             - { name: USER_AUTH_URL, value: "http://user-auth:8080" }
             - name: TELEGRAM_BOT_TOKEN
               valueFrom: { secretKeyRef: { name: platform-secrets, key: TELEGRAM_BOT_TOKEN } }
-            - { name: TELEGRAM_DEFAULT_TENANT_ID, value: "default-tenant" }
+            # user-auth validates TenantID as a UUID — must be the canonical
+            # demo-hospital tenant row created by tenant-seed, NOT a slug.
+            - { name: TELEGRAM_DEFAULT_TENANT_ID, value: "ce5ac1c5-9b16-486a-b091-5468d232a4b8" }
             - { name: TELEGRAM_DEFAULT_TENANT_SLUG, value: "demo-hospital" }
             - { name: CORS_ALLOW_ORIGIN, value: "https://unagent.site" }
             - name: INTERNAL_API_KEY

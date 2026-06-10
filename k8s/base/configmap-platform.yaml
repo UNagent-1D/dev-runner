@@ -10,7 +10,7 @@ metadata:
 data:
   # --- LLM provider (OpenRouter, OpenAI-compatible) ---
   OPENAI_BASE_URL: "https://openrouter.ai/api/v1"
-  OPENAI_DEFAULT_MODEL: "nvidia/nemotron-3-super-120b-a12b:free"
+  OPENAI_DEFAULT_MODEL: "deepseek/deepseek-v4-flash"
 
   # --- Secure channel kill switch (plaintext for the local lab) ---
   BACKEND_CHANNEL_ENABLED: "false"

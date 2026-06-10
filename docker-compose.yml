@@ -283,7 +283,7 @@ services:
       CONVERSATION_CHAT_URL: "http://conversation-chat:8082"
       HOSPITAL_MOCK_URL: "http://hospital-mock:8080"
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
-      OPENAI_DEFAULT_MODEL: ${OPENAI_DEFAULT_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
+      OPENAI_DEFAULT_MODEL: ${OPENAI_DEFAULT_MODEL:-deepseek/deepseek-v4-flash}
       # Resolves per-tenant agent config from Tenant /internal/.../profiles/active.
       # Falls back to hardcoded hospitalProfile if Tenant returns nothing.
       TENANT_INTERNAL_URL: http://tenant:8080
@@ -328,7 +328,7 @@ services:
       CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN:-http://localhost:3000}
       OPENAI_API_KEY: ${OPENROUTER_API_KEY}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
-      OPENAI_DEFAULT_MODEL: ${OPENAI_DEFAULT_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
+      OPENAI_DEFAULT_MODEL: ${OPENAI_DEFAULT_MODEL:-deepseek/deepseek-v4-flash}
       AGENT_RUNTIME_URL: "http://agent-runtime:3100"
       BACKEND_CHANNEL_KEY: ${BACKEND_CHANNEL_KEY:-}
       BACKEND_CHANNEL_ENABLED: ${BACKEND_CHANNEL_ENABLED:-false}

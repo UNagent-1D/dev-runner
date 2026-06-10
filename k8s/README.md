@@ -24,7 +24,9 @@ Other workloads run 2 replicas for availability, each shaped around its state:
   per-process, so the `chat-orch` Service uses `sessionAffinity: ClientIP` to
   pin all traffic (chat POST + matching SSE stream) to one pod; the spare takes
   over if the active pod dies (sessions are lost — they're in-memory anyway).
-- `agent-runtime` — two interchangeable stateless pods behind the Service.
+- `agent-runtime` — 1 replica: the proxy is stateless but the Telegram jobs
+  broker keeps its pending-job registry in process memory (register/wait/
+  resolve + the chat_results consumer must share a pod).
 - `redis` — primary/replica StatefulSet (`redis-1` runs `--replicaof redis-0`);
   the client-facing `redis` Service pins to `redis-0`, so clients are untouched
   and `redis-1` holds a live copy.

@@ -10,4 +10,4 @@ spec:
         - name: chat-orch
           env:
             - { name: CORS_ALLOW_ORIGIN, value: "https://unagent.site" }
-            - { name: TELEGRAM_DEFAULT_TENANT_ID, value: "default-tenant" }
+            - { name: TELEGRAM_DEFAULT_TENANT_ID, value: "ce5ac1c5-9b16-486a-b091-5468d232a4b8" }

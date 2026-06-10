@@ -1,5 +1,8 @@
-# Prod values from .env.prod: real bearer auth (EMAIL_AUTH_STUB=false) and the
-# verified SendGrid sender identity.
+# Prod values. NOTE: .env.prod says EMAIL_AUTH_STUB=false, but the working
+# Railway config ran AUTH_STUB=true (dashboard override, May-21 session) —
+# user-auth's bearer fails Spring's full JWT validation, killing OTP delivery
+# ("Te registramos, pero no pudimos enviar el código"). email-send is
+# ClusterIP-only inside the net-email zone, so the stub posture is acceptable.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -10,5 +13,7 @@ spec:
       containers:
         - name: email-send
           env:
-            - { name: AUTH_STUB, value: "false" }
+            - { name: AUTH_STUB, value: "true" }
             - { name: EMAIL_FROM_DEFAULT, value: "nizulu1998@gmail.com" }
+            # OTP codes must actually reach the inbox (Telegram pre-registration)
+            - { name: SENDGRID_SANDBOX_MODE, value: "false" }
