@@ -69,12 +69,12 @@ one cluster; everything below exists once per namespace unless marked global.
 
 ## 6. Communication paths (diagram arrows)
 
-External:
-1. Browser → Cloudflare Worker (HTTPS) — SPA assets + every API path
-2. Worker → `https://api[-dev].unagent.site` (GCLB) → `frontend` nginx :80
-3. Telegram app → Telegram Bot API ← long-poll — `chat-orch-telegram`
-4. chat-orch / chat-orch-telegram / conversation-chat → OpenRouter (HTTPS)
-5. email-send → SendGrid (HTTPS)
+External (all TLS on :443):
+1. Browser → Cloudflare Worker (HTTPS :443) — SPA assets + every API path
+2. Worker → `https://api[-dev].unagent.site` :443 (GCLB terminates TLS) → `frontend` nginx :80
+3. Telegram app → Telegram Bot API :443 ← long-poll (`getUpdates`) — `chat-orch-telegram`
+4. chat-orch / chat-orch-telegram / conversation-chat → OpenRouter :443 (HTTPS)
+5. email-send → SendGrid :443 (HTTPS); user-auth OTP mail rides path 16 → SendGrid
 
 In-cluster (all HTTP unless noted; **AES-256-GCM secure channel ON** for every backend↔backend hop, HTTP + RabbitMQ):
 6. frontend → chat-orch :3000 (`/v1/*`, SSE stream; ClientIP-pinned)
