@@ -40,6 +40,13 @@ spec:
               valueFrom: { secretKeyRef: { name: platform-secrets, key: INTERNAL_API_KEY } }
             - name: GIN_MODE
               valueFrom: { configMapKeyRef: { name: platform-config, key: GIN_MODE } }
+            # Behind Cloudflare + GCLB + nginx, the real client IP arrives in
+            # forwarded headers. Trust them so the login rate limiter keys per
+            # user, not per (shared) nginx pod IP. (pentest H1)
+            - { name: TRUST_PROXY_HEADERS, value: "true" }
+            # CORS allow-list (pentest C1 — never "*" with credentials). Both
+            # origins; the actual browser path is same-origin via the Worker.
+            - { name: CORS_ALLOW_ORIGINS, value: "https://unagent.site https://dev.unagent.site" }
           readinessProbe:
             httpGet: { path: /api/v1/health, port: 8080 }
             initialDelaySeconds: 5

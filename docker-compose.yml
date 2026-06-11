@@ -200,6 +200,13 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       GIN_MODE: release
       INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
+      # Space-separated list of allowed origins for CORS.
+      # Override in prod with the actual frontend domain (e.g. "https://app.unagent.site").
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:3000}
+      # Set to "true" only when behind a trusted reverse proxy (Cloudflare) that
+      # strips/overwrites CF-Connecting-IP and X-Forwarded-For. Must be "false"
+      # in local dev to prevent rate-limit bypass via header spoofing.
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
     ports:
       - "8080:8080"
     depends_on:
@@ -273,8 +280,6 @@ services:
     networks:
       - orch_net
       - chat_db_net
-      # email_net: appointment-confirmation emails POST to email-send:8080
-      - email_net
 
   agent-runtime:
     build:
@@ -285,7 +290,7 @@ services:
       CONVERSATION_CHAT_URL: "http://conversation-chat:8082"
       HOSPITAL_MOCK_URL: "http://hospital-mock:8080"
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
-      OPENAI_DEFAULT_MODEL: ${OPENAI_DEFAULT_MODEL:-deepseek/deepseek-v4-flash}
+      OPENAI_DEFAULT_MODEL: ${OPENAI_DEFAULT_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
       # Resolves per-tenant agent config from Tenant /internal/.../profiles/active.
       # Falls back to hardcoded hospitalProfile if Tenant returns nothing.
       TENANT_INTERNAL_URL: http://tenant:8080
@@ -330,7 +335,7 @@ services:
       CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN:-http://localhost:3000}
       OPENAI_API_KEY: ${OPENROUTER_API_KEY}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
-      OPENAI_DEFAULT_MODEL: ${OPENAI_DEFAULT_MODEL:-deepseek/deepseek-v4-flash}
+      OPENAI_DEFAULT_MODEL: ${OPENAI_DEFAULT_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
       AGENT_RUNTIME_URL: "http://agent-runtime:3100"
       BACKEND_CHANNEL_KEY: ${BACKEND_CHANNEL_KEY:-}
       BACKEND_CHANNEL_ENABLED: ${BACKEND_CHANNEL_ENABLED:-false}
@@ -391,6 +396,7 @@ services:
       MONGO_DB_COMPLIANCE: ${MONGO_DB_COMPLIANCE:-UN_compliance_db}
       BACKEND_CHANNEL_KEY: ${BACKEND_CHANNEL_KEY:-}
       BACKEND_CHANNEL_ENABLED: ${BACKEND_CHANNEL_ENABLED:-false}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8091/health', timeout=2).status == 200 else 1)\""]
       interval: 10s
