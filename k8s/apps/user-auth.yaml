@@ -1,5 +1,7 @@
 # OTP auth microservice (Go). Uses the user_auth DB on tenant-postgres (created
 # by the tenant-postgres init script). Waits for that DB before serving.
+# replicas: 1 — DO NOT SCALE: OTP rate-limit buckets are per-process; a second
+# replica would double every OTP budget and split lockout state.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

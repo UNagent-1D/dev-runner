@@ -1,9 +1,21 @@
 # Redis — conversation-chat externalized session cache (redis://redis:6379/1).
 # This externalized state is what makes conversation-chat horizontally
 # replicable (pattern #3).
-# Runs as a 2-member primary/replica StatefulSet: redis-1 follows redis-0 via
-# --replicaof. The client-facing `redis` Service pins to redis-0 so reads and
-# writes never split across instances; redis-1 holds a live copy of the data.
+#
+# 2-member primary/replica StatefulSet + a 3-member Sentinel quorum
+# (Deployment redis-sentinel). Sentinel watches master "conversation-cache"
+# (initially redis-0) and auto-promotes redis-1 if redis-0 stays down past
+# down-after-milliseconds. Redis pods are sentinel-aware at boot: they ask
+# Sentinel who the current master is and join accordingly, so a returning
+# redis-0 re-enters as a REPLICA of a promoted redis-1 (no split-brain).
+#
+# KNOWN LIMIT (client routing): the client-facing `redis` Service still pins
+# to redis-0. After a Sentinel failover, writes through that Service hit a
+# replica (READONLY) until redis-0 is promoted back or the clients move to a
+# Sentinel-aware connection (go-redis FailoverClient) — app change, tracked
+# as follow-up. In the common failure mode (redis-0 pod dies and is recreated
+# by the StatefulSet within seconds, faster than down-after) no failover
+# triggers and the pinned Service remains correct.
 apiVersion: v1
 kind: Service
 metadata:
@@ -16,8 +28,7 @@ spec:
   ports:
     - { name: redis, port: 6379, targetPort: 6379 }
 ---
-# Headless service: gives the replica a stable DNS name for the primary
-# (redis-0.redis-headless).
+# Headless service: stable DNS names for members (redis-{0,1}.redis-headless).
 apiVersion: v1
 kind: Service
 metadata:
@@ -28,6 +39,18 @@ spec:
   selector: { app: redis }
   ports:
     - { name: redis, port: 6379, targetPort: 6379 }
+---
+# Sentinel discovery endpoint — used by the redis pods' bootstrap and by any
+# future Sentinel-aware client.
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-sentinel
+  labels: { app: redis-sentinel }
+spec:
+  selector: { app: redis-sentinel }
+  ports:
+    - { name: sentinel, port: 26379, targetPort: 26379 }
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -54,11 +77,29 @@ spec:
             - sh
             - -c
             - |
-              if [ "$POD_NAME" = "redis-0" ]; then
-                exec redis-server
-              else
-                exec redis-server --replicaof redis-0.redis-headless 6379
-              fi
+              # Sentinel-aware bootstrap: adopt whatever master Sentinel knows;
+              # fall back to the static redis-0-is-master shape on cold start.
+              # --replica-announce-ip keeps Sentinel's view in hostnames (it
+              # runs with resolve/announce-hostnames yes), never pod IPs.
+              ANNOUNCE="--replica-announce-ip $POD_NAME.redis-headless"
+              MASTER_HOST=$(timeout 3 redis-cli -h redis-sentinel -p 26379 SENTINEL get-master-addr-by-name conversation-cache 2>/dev/null | sed -n 1p)
+              MASTER_PORT=$(timeout 3 redis-cli -h redis-sentinel -p 26379 SENTINEL get-master-addr-by-name conversation-cache 2>/dev/null | sed -n 2p)
+              case "$MASTER_HOST" in
+                "$POD_NAME".*)
+                  echo "sentinel says I ($POD_NAME) am master"
+                  exec redis-server $ANNOUNCE ;;
+                "")
+                  if [ "$POD_NAME" = "redis-0" ]; then
+                    echo "no sentinel answer — cold start as master"
+                    exec redis-server $ANNOUNCE
+                  else
+                    echo "no sentinel answer — cold start as replica of redis-0"
+                    exec redis-server $ANNOUNCE --replicaof redis-0.redis-headless 6379
+                  fi ;;
+                *)
+                  echo "sentinel master is $MASTER_HOST:$MASTER_PORT — following it"
+                  exec redis-server $ANNOUNCE --replicaof "$MASTER_HOST" "${MASTER_PORT:-6379}" ;;
+              esac
           ports:
             - { name: redis, containerPort: 6379 }
           readinessProbe:
@@ -68,3 +109,56 @@ spec:
           resources:
             requests: { cpu: 25m, memory: 64Mi }
             limits: { cpu: 250m, memory: 256Mi }
+---
+# Sentinel quorum — 3 replicas so a majority (2) survives the loss of any one
+# pod (or of redis-0's node) and can authorize a failover. Runs apart from the
+# redis pods on purpose: a sentinel co-located with the master dies with it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-sentinel
+  labels: { app: redis-sentinel }
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: redis-sentinel }
+  template:
+    metadata:
+      # net-chat-db: sentinels must reach the redis members and each other
+      labels: { app: redis-sentinel, net-chat-db: "true" }
+    spec:
+      containers:
+        - name: sentinel
+          image: redis:7-alpine
+          command:
+            - sh
+            - -c
+            - |
+              # Sentinel rewrites its config file at runtime → write it to an
+              # emptyDir first. A restarted sentinel starts from the static
+              # config (redis-0 as master) and converges to the current master
+              # through the __sentinel__:hello gossip (higher config epoch wins).
+              cat > /data/sentinel.conf <<'EOF'
+              port 26379
+              sentinel resolve-hostnames yes
+              sentinel announce-hostnames yes
+              sentinel monitor conversation-cache redis-0.redis-headless 6379 2
+              sentinel down-after-milliseconds conversation-cache 5000
+              sentinel failover-timeout conversation-cache 30000
+              sentinel parallel-syncs conversation-cache 1
+              EOF
+              exec redis-sentinel /data/sentinel.conf
+          ports:
+            - { name: sentinel, containerPort: 26379 }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          readinessProbe:
+            exec: { command: ["redis-cli", "-p", "26379", "ping"] }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: 100m, memory: 64Mi }
+      volumes:
+        - name: data
+          emptyDir: {}

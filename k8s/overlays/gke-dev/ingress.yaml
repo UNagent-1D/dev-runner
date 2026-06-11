@@ -18,6 +18,14 @@ metadata:
   name: frontend-backendconfig
 spec:
   timeoutSec: 86400
+  # With frontend at 2 replicas, the browser must stick to ONE nginx pod so
+  # its chat POSTs and SSE stream reach the same chat-orch pod (per-pod
+  # SessionStore/SseHub; nginx→chat-orch is already pinned per-source by that
+  # Service's ClientIP affinity). Cookie-based — client-IP affinity would not
+  # survive Cloudflare's per-request edge-node rotation in front of this GCLB.
+  sessionAffinity:
+    affinityType: "GENERATED_COOKIE"
+    affinityCookieTtlSec: 10800
   healthCheck:
     type: HTTP
     requestPath: /

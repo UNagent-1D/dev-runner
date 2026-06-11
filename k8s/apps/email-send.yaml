@@ -8,7 +8,9 @@ metadata:
   name: email-send
   labels: { app: email-send }
 spec:
-  replicas: 1
+  # 2 replicas for HA — safe: state lives in email-mongo (rs0) and the
+  # idempotency key lookup is DB-backed, so concurrent pods cannot double-send.
+  replicas: 2
   selector:
     matchLabels: { app: email-send }
   template:

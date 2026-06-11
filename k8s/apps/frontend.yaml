@@ -8,7 +8,11 @@ metadata:
   name: frontend
   labels: { app: frontend }
 spec:
-  replicas: 1
+  # 2 replicas for HA. The browser→frontend-pod→chat-orch-pod chain must stay
+  # sticky per client (chat-orch SessionStore/SseHub are per-pod): GCLB handles
+  # browser→pod stickiness via the BackendConfig sessionAffinity (gke overlays);
+  # the Service-level ClientIP affinity below covers kube-proxy paths (minikube).
+  replicas: 2
   selector:
     matchLabels: { app: frontend }
   template:
@@ -42,5 +46,8 @@ metadata:
 spec:
   type: LoadBalancer
   selector: { app: frontend }
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP: { timeoutSeconds: 10800 }
   ports:
     - { name: http, port: 80, targetPort: 80 }

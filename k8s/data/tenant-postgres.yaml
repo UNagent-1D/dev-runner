@@ -1,14 +1,37 @@
-# Tenant auth DB. Schema is applied by the tenant-migrate Job (golang-migrate);
-# this init script only bootstraps the separate user_auth database + table that
-# User-Auth owns (mounted from scripts/data-stores/user-auth-init.sql via the
-# tenant-postgres-init ConfigMap generated in kustomization.yaml).
+# Tenant auth DB — primary (tenant-postgres-0) + one streaming standby
+# (tenant-postgres-1). Schema is applied by the tenant-migrate Job
+# (golang-migrate) against the primary; the init script only bootstraps the
+# separate user_auth database + table that User-Auth owns (mounted from
+# scripts/data-stores/user-auth-init.sql via the tenant-postgres-init
+# ConfigMap generated in kustomization.yaml).
+#
+# Replication shape:
+#  * pod-0 postStart (idempotent) creates the `replicator` role, opens
+#    pg_hba for replication connections, sets wal_keep_size and reloads —
+#    runtime setup because the PVC may predate this manifest (the
+#    docker-entrypoint-initdb.d scripts only run against an empty volume).
+#  * pod-1's initContainer clones the primary with pg_basebackup -R on first
+#    boot (empty PVC) and starts as a hot standby (standby.signal).
+#  * Promotion is MANUAL (kubectl exec tenant-postgres-1 -- su-exec postgres
+#    pg_ctl promote); vanilla Postgres has no safe auto-promotion without
+#    Patroni/pg_auto_failover — out of scope here.
+#
+# MIGRATION NOTE: the Service below is headless (clusterIP: None — immutable,
+# so converting an existing namespace requires `kubectl delete svc
+# tenant-postgres` before the apply) and pins to pod-0 so clients always hit
+# the WRITABLE primary; pod-1 would otherwise enter the DNS round-robin and
+# break writes. The pin also provides the tenant-postgres-0.tenant-postgres
+# per-pod DNS record the standby's pg_basebackup/primary_conninfo use.
 apiVersion: v1
 kind: Service
 metadata:
   name: tenant-postgres
   labels: { app: tenant-postgres }
 spec:
-  selector: { app: tenant-postgres }
+  clusterIP: None
+  selector:
+    app: tenant-postgres
+    statefulset.kubernetes.io/pod-name: tenant-postgres-0
   ports:
     - { name: postgres, port: 5432, targetPort: 5432 }
 ---
@@ -19,14 +42,48 @@ metadata:
   labels: { app: tenant-postgres }
 spec:
   serviceName: tenant-postgres
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels: { app: tenant-postgres }
   template:
     metadata:
       # net-* labels mirror docker-compose networks (see network/networkpolicies.yaml)
+      # (intra-zone policy also covers pod-1 → pod-0 streaming replication)
       labels: { app: tenant-postgres, net-tenant-db: "true" }
     spec:
+      initContainers:
+        # First boot of a non-0 member: clone the primary. No-op on pod-0 and
+        # on any pod whose PGDATA is already populated.
+        - name: standby-clone
+          image: postgres:16-alpine
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              if [ "$POD_NAME" = "tenant-postgres-0" ] || [ -s "$PGDATA/PG_VERSION" ]; then
+                echo "no clone needed ($POD_NAME)"; exit 0
+              fi
+              echo "cloning primary into empty PGDATA..."
+              # retries until the primary is up AND pod-0's postStart has
+              # created the replicator role + pg_hba entry
+              until PGPASSWORD="$POSTGRES_PASSWORD" pg_basebackup \
+                  -h tenant-postgres-0.tenant-postgres -p 5432 -U replicator \
+                  -D "$PGDATA" -X stream -R --checkpoint=fast; do
+                echo "  primary not ready for basebackup, retrying..."
+                rm -rf "$PGDATA"; sleep 5
+              done
+              chown -R postgres:postgres "$(dirname "$PGDATA")"
+              chmod 700 "$PGDATA"
+              echo "standby clone complete (standby.signal written by -R)"
+          env:
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - { name: PGDATA, value: "/var/lib/postgresql/data/pgdata" }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: platform-secrets, key: POSTGRES_PASSWORD_TENANT }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
       containers:
         - name: postgres
           image: postgres:16-alpine
@@ -37,6 +94,31 @@ spec:
               valueFrom:
                 secretKeyRef: { name: platform-secrets, key: POSTGRES_PASSWORD_TENANT }
             - { name: PGDATA, value: "/var/lib/postgresql/data/pgdata" }
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+          lifecycle:
+            # Primary-side replication setup. Runtime (not initdb) because the
+            # PVC may predate this manifest. Idempotent; never fails the pod.
+            postStart:
+              exec:
+                command:
+                  - sh
+                  - -c
+                  - |
+                    [ "$POD_NAME" = "tenant-postgres-0" ] || exit 0
+                    (
+                      for i in $(seq 1 60); do
+                        pg_isready -U tenant -d tenant >/dev/null 2>&1 && break
+                        sleep 2
+                      done
+                      psql -U tenant -d tenant -tAc "SELECT 1 FROM pg_roles WHERE rolname='replicator'" | grep -q 1 \
+                        || psql -U tenant -d tenant -c "CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD '$POSTGRES_PASSWORD'"
+                      grep -q "host replication replicator" "$PGDATA/pg_hba.conf" \
+                        || echo "host replication replicator all scram-sha-256" >> "$PGDATA/pg_hba.conf"
+                      psql -U tenant -d tenant -c "ALTER SYSTEM SET wal_keep_size = '128MB'"
+                      psql -U tenant -d tenant -c "SELECT pg_reload_conf()"
+                    ) || true
+                    exit 0
           ports:
             - { name: postgres, containerPort: 5432 }
           volumeMounts:

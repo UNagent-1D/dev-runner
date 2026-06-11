@@ -62,6 +62,7 @@ deploy:  ## Render + apply all manifests
 	$(KUSTOMIZE) | $(KUBECTL) apply -f -
 	@echo ">> waiting for the replica-set init + DB migrations..."
 	-$(KUBECTL) -n $(NS) wait --for=condition=complete job/email-mongo-rs-init --timeout=180s
+	-$(KUBECTL) -n $(NS) wait --for=condition=complete job/conversation-mongo-rs-init --timeout=180s
 	-$(KUBECTL) -n $(NS) wait --for=condition=complete job/tenant-migrate    --timeout=180s
 	-$(KUBECTL) -n $(NS) wait --for=condition=complete job/tenant-seed       --timeout=180s
 
@@ -156,11 +157,12 @@ gke-deploy:  ## Render overlays/gke-$(ENV), assert GKE-safety, pin :$(TAG), appl
 	@! grep -q "sk-or-v1-REPLACE_ME" /tmp/gke-render-$(ENV).yaml \
 	  || { echo "!! placeholder Secret leaked into the GKE render"; exit 1; }
 	@# one-shot Jobs carry the image tag in an immutable pod template — drop
-	@# completed ones so a new TAG can re-apply (all three are idempotent)
-	-$(KUBECTL) -n $(GKE_NS) delete job email-mongo-rs-init tenant-migrate tenant-seed --ignore-not-found
+	@# completed ones so a new TAG can re-apply (all four are idempotent)
+	-$(KUBECTL) -n $(GKE_NS) delete job email-mongo-rs-init conversation-mongo-rs-init tenant-migrate tenant-seed --ignore-not-found
 	sed "s/:GKE_TAG/:$(TAG)/g" /tmp/gke-render-$(ENV).yaml | $(KUBECTL) apply -f -
 	@echo ">> waiting for the replica-set init + DB migrations ($(GKE_NS))..."
 	-$(KUBECTL) -n $(GKE_NS) wait --for=condition=complete job/email-mongo-rs-init --timeout=300s
+	-$(KUBECTL) -n $(GKE_NS) wait --for=condition=complete job/conversation-mongo-rs-init --timeout=300s
 	-$(KUBECTL) -n $(GKE_NS) wait --for=condition=complete job/tenant-migrate    --timeout=300s
 	-$(KUBECTL) -n $(GKE_NS) wait --for=condition=complete job/tenant-seed       --timeout=300s
 

@@ -1,12 +1,32 @@
 # RabbitMQ — async chat_requests / chat_results queues consumed by
 # conversation-chat::worker and agent-runtime::broker. Built locally from
 # UN_message_broker_mb (pre-declared durable queues via definitions.json).
+#
+# 3-node cluster: each pod gets a long node name on its per-pod DNS record
+# (rabbit@rabbitmq-N.rabbitmq.<ns>.svc.cluster.local) and joins via
+# classic_config peer discovery. OrderedReady startup means rabbitmq-0 seeds
+# the cluster and 1/2 join it. pause_minority keeps a partitioned minority
+# node from accepting writes (consistency over availability on partition).
+#
+# QUEUE-TYPE NOTE: the pre-declared queues are durable CLASSIC queues — they
+# live on the node that declared them (rabbitmq-0). Node-level HA for queue
+# CONTENTS needs x-queue-type: quorum in UN_message_broker_mb/definitions.json
+# (2-line change + image rebuild + one-time queue re-creation) — tracked as
+# follow-up; out of scope for a manifests-only pass.
+#
+# MIGRATION NOTE: the Service below is headless (clusterIP is immutable —
+# converting an existing namespace requires `kubectl delete svc rabbitmq`
+# before the apply). Clients resolving `rabbitmq` now get pod IPs via DNS;
+# AMQP operations route internally to the queue's home node regardless of
+# which cluster node accepted the connection.
 apiVersion: v1
 kind: Service
 metadata:
   name: rabbitmq
   labels: { app: rabbitmq }
 spec:
+  clusterIP: None
+  publishNotReadyAddresses: true   # peers must resolve each other before passing readiness
   selector: { app: rabbitmq }
   ports:
     - { name: amqp, port: 5672, targetPort: 5672 }
@@ -19,21 +39,56 @@ metadata:
   labels: { app: rabbitmq }
 spec:
   serviceName: rabbitmq
-  replicas: 1
+  replicas: 3
   selector:
     matchLabels: { app: rabbitmq }
   template:
     metadata:
       # net-* labels mirror docker-compose networks (see network/networkpolicies.yaml)
+      # (intra-zone policy also covers node↔node clustering: epmd 4369 + dist 25672)
       labels: { app: rabbitmq, net-orch: "true" }
     spec:
       containers:
         - name: rabbitmq
           image: unagent/rabbitmq:local
           imagePullPolicy: Never
+          env:
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: POD_NAMESPACE
+              valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+            - { name: RABBITMQ_USE_LONGNAME, value: "true" }
+            - name: RABBITMQ_NODENAME
+              value: "rabbit@$(POD_NAME).rabbitmq.$(POD_NAMESPACE).svc.cluster.local"
+          command:
+            - sh
+            - -c
+            - |
+              # Shared Erlang cookie: required for inter-node clustering. The
+              # cookie only authenticates cluster/CLI peers inside the
+              # net-orch zone (NetworkPolicy-guarded); it is not a user-facing
+              # credential, so a manifest literal is acceptable here.
+              echo "unagent-rabbit-cluster-cookie" > /var/lib/rabbitmq/.erlang.cookie
+              chmod 600 /var/lib/rabbitmq/.erlang.cookie
+              chown rabbitmq:rabbitmq /var/lib/rabbitmq/.erlang.cookie 2>/dev/null || true
+              # Cluster formation (idempotent append — image ships a static
+              # rabbitmq.conf; namespace is resolved at runtime so the same
+              # manifest works in unagent / unagent-dev / unagent-prod)
+              if ! grep -q cluster_formation /etc/rabbitmq/rabbitmq.conf; then
+                cat >> /etc/rabbitmq/rabbitmq.conf <<EOF
+              cluster_formation.peer_discovery_backend = classic_config
+              cluster_formation.classic_config.nodes.1 = rabbit@rabbitmq-0.rabbitmq.${POD_NAMESPACE}.svc.cluster.local
+              cluster_formation.classic_config.nodes.2 = rabbit@rabbitmq-1.rabbitmq.${POD_NAMESPACE}.svc.cluster.local
+              cluster_formation.classic_config.nodes.3 = rabbit@rabbitmq-2.rabbitmq.${POD_NAMESPACE}.svc.cluster.local
+              cluster_partition_handling = pause_minority
+              EOF
+              fi
+              exec docker-entrypoint.sh rabbitmq-server
           ports:
             - { name: amqp, containerPort: 5672 }
             - { name: management, containerPort: 15672 }
+            - { name: epmd, containerPort: 4369 }
+            - { name: dist, containerPort: 25672 }
           volumeMounts:
             - { name: data, mountPath: /var/lib/rabbitmq }
           readinessProbe:

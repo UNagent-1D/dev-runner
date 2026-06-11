@@ -48,15 +48,19 @@ spec:
             - { name: mongo, containerPort: 27017 }
           volumeMounts:
             - { name: data, mountPath: /data/db }
+          # mongosh is a Node.js process — too slow to spawn under CPU pressure
+          # for a 5s exec deadline; kubelet was SIGKILLing healthy mongods,
+          # which churned rs0 elections (no stable PRIMARY → email-send
+          # fail-fast boot ping crash-looped). Liveness = cheap TCP check;
+          # readiness keeps the real ping with a tolerant deadline.
           readinessProbe:
             exec:
               command: ["mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
             initialDelaySeconds: 5
-            periodSeconds: 5
-            timeoutSeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 15
           livenessProbe:
-            exec:
-              command: ["mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+            tcpSocket: { port: 27017 }
             initialDelaySeconds: 20
             periodSeconds: 15
             timeoutSeconds: 5

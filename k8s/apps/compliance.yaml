@@ -1,6 +1,8 @@
 # KPI counters + audit-log writer (Python/FastAPI). Writes audit_logs to the
 # email-mongo REPLICA SET (pattern #1 consumer). Write-tolerant: audit inserts
 # are best-effort, so it can come up before a PRIMARY exists.
+# replicas: 1 — DO NOT SCALE: tenantStats + daily buckets are in-memory; a
+# second replica would split the KPI counters and the dashboard would seesaw.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

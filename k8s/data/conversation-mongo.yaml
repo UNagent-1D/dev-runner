@@ -1,11 +1,21 @@
-# conversation-chat session/history store. Single-node (NOT a replica set):
-# only email-mongo carries the replication pattern.
+# conversation-chat session/history store — 3-member replica set "rs1"
+# (PATTERN #1, same shape as email-mongo). conversation-mongo-0's PVC carries
+# the pre-replica-set data; the rs-init Job initiates from member 0 so that
+# data becomes the PRIMARY's and the new members initial-sync from it.
+#
+# MIGRATION NOTE (single-node -> RS): the Service below is headless
+# (clusterIP: None) so the StatefulSet pods get the stable per-pod DNS the
+# replica set registers (conversation-mongo-{0,1,2}.conversation-mongo).
+# clusterIP is immutable — converting an existing namespace requires
+#   kubectl delete svc conversation-mongo   before the apply.
 apiVersion: v1
 kind: Service
 metadata:
   name: conversation-mongo
   labels: { app: conversation-mongo }
 spec:
+  clusterIP: None
+  publishNotReadyAddresses: true   # let rs.initiate() reach members pre-readiness
   selector: { app: conversation-mongo }
   ports:
     - { name: mongo, port: 27017, targetPort: 27017 }
@@ -17,26 +27,39 @@ metadata:
   labels: { app: conversation-mongo }
 spec:
   serviceName: conversation-mongo
-  replicas: 1
+  replicas: 3
+  podManagementPolicy: Parallel   # all members + DNS up together → rs.initiate has quorum
   selector:
     matchLabels: { app: conversation-mongo }
   template:
     metadata:
       # net-* labels mirror docker-compose networks (see network/networkpolicies.yaml)
+      # (intra-zone policy also covers member↔member replication traffic)
       labels: { app: conversation-mongo, net-chat-db: "true" }
     spec:
+      terminationGracePeriodSeconds: 15
       containers:
         - name: mongod
           image: mongo:7
+          args: ["--replSet", "rs1", "--bind_ip_all"]
           ports:
             - { name: mongo, containerPort: 27017 }
           volumeMounts:
             - { name: data, mountPath: /data/db }
+          # mongosh is a Node.js process — too slow to spawn under CPU pressure
+          # (initial sync + 3 members) for a 5s exec deadline; kubelet was
+          # SIGKILLing healthy mongods. Liveness = cheap TCP check (process
+          # alive); readiness keeps the real ping with a tolerant deadline.
           readinessProbe:
             exec:
               command: ["mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 15
+          livenessProbe:
+            tcpSocket: { port: 27017 }
+            initialDelaySeconds: 20
+            periodSeconds: 15
             timeoutSeconds: 5
           resources:
             requests: { cpu: 50m, memory: 256Mi }
@@ -47,3 +70,62 @@ spec:
         accessModes: ["ReadWriteOnce"]
         storageClassName: standard
         resources: { requests: { storage: 1Gi } }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: conversation-mongo-rs-init
+  labels: { app: conversation-mongo }
+spec:
+  backoffLimit: 10
+  activeDeadlineSeconds: 600   # surface a stuck bootstrap as a failed Job, never hang forever
+  template:
+    metadata:
+      # net-chat-db lets the bootstrap job reach the mongo RS pods on 27017
+      labels: { app: conversation-mongo-rs-init, net-chat-db: "true" }
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: rs-init
+          image: mongo:7
+          command: ["bash", "-c"]
+          args:
+            - |
+              set -e
+              echo "Waiting for all 3 mongod members to answer ping..."
+              for h in conversation-mongo-0 conversation-mongo-1 conversation-mongo-2; do
+                until mongosh --host "$h.conversation-mongo" --quiet --eval 'db.adminCommand("ping").ok' >/dev/null 2>&1; do
+                  echo "  $h not ready, retrying..."; sleep 2;
+                done
+                echo "  $h is up"
+              done
+
+              echo "Ensuring replica set rs1 is initiated (idempotent; member 0 carries the legacy data)..."
+              for i in $(seq 1 40); do
+                out=$(mongosh --host conversation-mongo-0.conversation-mongo --quiet --eval '
+                  let s;
+                  try { s = rs.status(); } catch (e) { s = { error: true, code: e.code, codeName: e.codeName }; }
+                  if (s.error && (s.code === 94 || s.codeName === "NotYetInitialized")) {
+                    rs.initiate({ _id: "rs1", members: [
+                      { _id: 0, host: "conversation-mongo-0.conversation-mongo:27017" },
+                      { _id: 1, host: "conversation-mongo-1.conversation-mongo:27017" },
+                      { _id: 2, host: "conversation-mongo-2.conversation-mongo:27017" } ] });
+                    print("INITIATED");
+                  } else if (!s.error && s.set === "rs1") {
+                    print("ALREADY_OK");        // existing rs1 config — leave it
+                  } else {
+                    print("RETRY");             // election in progress / other recoverable error
+                  }' 2>/dev/null) || true
+                echo "  attempt $i: $out"
+                case "$out" in *INITIATED*|*ALREADY_OK*) break;; esac
+                sleep 3
+              done
+
+              echo "Waiting for a PRIMARY to be elected (any member)..."
+              until [ -n "$(mongosh --host conversation-mongo-0.conversation-mongo --quiet --eval 'db.hello().primary' 2>/dev/null)" ]; do
+                sleep 2;
+              done
+              echo "Replica set rs1 ready. PRIMARY = $(mongosh --host conversation-mongo-0.conversation-mongo --quiet --eval 'db.hello().primary' 2>/dev/null)"
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 250m, memory: 256Mi }

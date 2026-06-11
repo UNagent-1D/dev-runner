@@ -43,8 +43,10 @@ spec:
             - name: GIN_MODE
               valueFrom: { configMapKeyRef: { name: platform-config, key: GIN_MODE } }
             - { name: REDIS_URL, value: "redis://redis:6379/1" }
-            # Single-node conversation store — NOT the email-mongo replica set.
-            - { name: MONGO_URI, value: "mongodb://conversation-mongo:27017" }
+            # 3-member replica set rs1 (mirrors the EMAIL_MONGO_RS_URI form):
+            # the driver follows the PRIMARY across elections. Bare-form hosts
+            # require running in the StatefulSet's namespace.
+            - { name: MONGO_URI, value: "mongodb://conversation-mongo-0.conversation-mongo:27017,conversation-mongo-1.conversation-mongo:27017,conversation-mongo-2.conversation-mongo:27017/?replicaSet=rs1" }
             - { name: MONGO_DB, value: "conversatory" }
             - { name: ACR_SERVICE_URL, value: "http://agent-runtime:3100" }
             # IMPORTANT: conversation-chat talks to agent-runtime for tenant/ACR
@@ -116,7 +118,7 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: conversation-chat
-  minReplicas: 2
+  minReplicas: 3
   maxReplicas: 6
   metrics:
     - type: Resource

@@ -5,7 +5,12 @@ metadata:
   name: tenant
   labels: { app: tenant }
 spec:
-  replicas: 1
+  # 2 replicas for HA. Stateless except the in-memory login rate-limit buckets
+  # (middlewares/rate_limit_middleware.go): with N pods each keeps its own
+  # bucket, so the effective per-client login budget is ~N× the configured one.
+  # Acceptable dilution — the throttle still bounds abuse; tighten the
+  # per-pod rate if N grows.
+  replicas: 2
   selector:
     matchLabels: { app: tenant }
   template:
